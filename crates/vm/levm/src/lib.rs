@@ -69,6 +69,7 @@ pub mod constants;
 pub mod db;
 pub mod debug;
 pub mod environment;
+pub mod erc7562_tracer;
 pub mod errors;
 pub mod execution_handlers;
 pub mod gas_cost;
