@@ -164,6 +164,16 @@ pub struct FrameEntry {
 /// for an active tracer. Mirrors `LevmCallTracer`'s shape (an `active: bool`
 /// flag plus a `Vec`-backed call-frame stack), but keyed by frame-transaction
 /// frame index at the top level rather than assuming a single root call.
+///
+/// ## Known gap (mirrors `validation_observer.rs`'s OQ4)
+///
+/// ethrex's opcode set (`opcodes.rs`) does not yet define `SETDELEGATE`.
+/// This tracer counts whatever opcodes the VM dispatches; it cannot count an
+/// opcode ethrex hasn't implemented. `erc-7562.md`'s [FRA-060] deploy-frame
+/// delegation rule is therefore only partially exercisable against ethrex
+/// today (CREATE/CREATE2 and SSTORE to sender's own storage work;
+/// SETDELEGATE does not exist to test). Revisit once ethrex implements
+/// EIP-7819.
 #[derive(Debug, Default, Clone)]
 pub struct Erc7562FrameTracer {
     pub active: bool,
