@@ -1,0 +1,548 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Deploying a native rollups ethrex L2 - Ethrex</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="shortcut icon" href="../../favicon-65f98953.png">
+        <link rel="stylesheet" href="../../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../../css/general-2459343d.css">
+        <link rel="stylesheet" href="../../css/chrome-ae938929.css">
+        <link rel="stylesheet" href="../../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../../searchindex-8e6e5d72.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../../toc-c68b2aa5.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Ethrex</h1>
+
+                    <div class="right-buttons">
+                        <a href="../../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/lambdaclass/ethrex" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="deploying-a-native-rollups-ethrex-l2"><a class="header" href="#deploying-a-native-rollups-ethrex-l2">Deploying a native rollups ethrex L2</a></h1>
+<p>This guide covers how to deploy a native rollup L2 using ethrex. Native rollups (based on <a href="https://eips.ethereum.org/EIPS/eip-8079">EIP-8079</a>) replace ZK proofs and fraud proofs with direct re-execution on L1: when the L2 submits a block, L1 re-executes it via the <code>EXECUTE</code> precompile and verifies the state transition is correct.</p>
+<blockquote class="blockquote-tag blockquote-tag-note">
+<p class="blockquote-tag-title"><svg viewbox="0 0 16 16" width="18" height="18"><path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm8-6.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM6.5 7.75A.75.75 0 0 1 7.25 7h1a.75.75 0 0 1 .75.75v2.75h.25a.75.75 0 0 1 0 1.5h-2a.75.75 0 0 1 0-1.5h.25v-2h-.25a.75.75 0 0 1-.75-.75ZM8 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"></path></svg>Note</p>
+<p>This is a proof-of-concept. The native rollup L2 runs against a local ethrex L1 with the EXECUTE precompile enabled. It is not yet intended for public testnets or production.</p>
+</blockquote>
+<h2 id="architecture-overview"><a class="header" href="#architecture-overview">Architecture overview</a></h2>
+<pre><code>┌──────────────────────────────────┐
+│            L1 (ethrex)           │
+│                                  │
+│  NativeRollup.sol                │
+│    ├─ advance()                  │
+│    │    └─ calls EXECUTE(0x0101) │
+│    │         └─ re-executes L2   │
+│    │            block in LEVM    │
+│    ├─ sendL1Message()            │
+│    └─ claimWithdrawal()          │
+└──────────┬───────────────────────┘
+           │ L1 RPC
+           │
+┌──────────┴───────────────────────┐
+│         L2 (ethrex native)       │
+│                                  │
+│  NativeL1Watcher                 │
+│    └─ polls L1 for new messages  │
+│                                  │
+│  NativeBlockProducer             │
+│    ├─ builds relayer txs for     │
+│    │  L1 messages                │
+│    ├─ sets parent_beacon_block   │
+│    │  _root = Merkle root        │
+│    └─ produces L2 blocks         │
+│                                  │
+│  NativeL1Advancer               │
+│    ├─ generates execution witness│
+│    ├─ encodes SSZ StatelessInput │
+│    └─ calls advance() on L1      │
+│                                  │
+│  Predeploys:                     │
+│    L2Bridge  (0x...fffd)         │
+└──────────────────────────────────┘
+</code></pre>
+<p>The three L2 GenServer actors run as concurrent tasks:</p>
+<ul>
+<li>
+<p><strong>NativeL1Watcher</strong> — Polls the L1 NativeRollup.sol contract at regular intervals for <code>L1MessageRecorded</code> events and forwards them to the NativeBlockProducer via <code>EnqueueL1Messages</code> actor messages (there is no shared queue; the producer owns a private message queue). It scans L1 logs in configurable block ranges and parses the event data (sender, recipient, value, gas limit, calldata, nonce).</p>
+</li>
+<li>
+<p><strong>NativeBlockProducer</strong> — Produces L2 blocks every <code>block_time_ms</code> milliseconds. It first consumes pending L1 messages from its own queue, builds signed relayer transactions to execute those messages via the L2Bridge contract, then fills remaining block gas with regular mempool transactions. It sets <code>parent_beacon_block_root</code> in the block header to the L1 messages Merkle root, which the EIP-4788 system contract stores at <code>BEACON_ROOTS_ADDRESS</code> during block processing.</p>
+</li>
+<li>
+<p><strong>NativeL1Advancer</strong> — Reads produced L2 blocks from the Store, generates an execution witness, encodes it as SSZ <code>StatelessInput</code>, and submits it to NativeRollup.sol via <code>advance()</code>. The contract forwards the SSZ to the EXECUTE precompile which calls <code>verify_stateless_new_payload</code>.</p>
+</li>
+</ul>
+<h2 id="prerequisites"><a class="header" href="#prerequisites">Prerequisites</a></h2>
+<ul>
+<li>Rust toolchain (stable)</li>
+<li><code>solc</code> (Solidity compiler) — needed to compile the contracts during build</li>
+<li><a href="https://github.com/lambdaclass/rex/tree/feat/claim-native-withdraw"><code>rex</code></a> — run <code>make cli</code> in that branch to install the required version</li>
+<li>Docker — needed for the Blockscout block explorer (Step 6)</li>
+<li>Python 3 — needed for the contract verification script (Step 6)</li>
+</ul>
+<blockquote class="blockquote-tag blockquote-tag-note">
+<p class="blockquote-tag-title"><svg viewbox="0 0 16 16" width="18" height="18"><path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8Zm8-6.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13ZM6.5 7.75A.75.75 0 0 1 7.25 7h1a.75.75 0 0 1 .75.75v2.75h.25a.75.75 0 0 1 0 1.5h-2a.75.75 0 0 1 0-1.5h.25v-2h-.25a.75.75 0 0 1-.75-.75ZM8 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z"></path></svg>Note</p>
+<p><strong>Rex CLI syntax quirks:</strong></p>
+<ul>
+<li><code>--value</code> is always in <strong>wei</strong> (e.g., <code>1000000000000000000</code> for 1 ETH).</li>
+<li><code>bytes</code> arguments should be passed as hex <strong>without</strong> the <code>0x</code> prefix (e.g., <code>d09de08a</code>), or as <code>""</code> for empty bytes.</li>
+</ul>
+</blockquote>
+<p>Verify solc is installed:</p>
+<pre><code class="language-shell">solc --version
+</code></pre>
+<h2 id="demo"><a class="header" href="#demo">Demo</a></h2>
+<blockquote>
+<p><strong>What this demo shows:</strong> a native rollup L2 that settles blocks to L1 via direct re-execution (the EXECUTE precompile), with a live deposit (L1→L2) and withdrawal (L2→L1) roundtrip.</p>
+</blockquote>
+<p>The native rollup L2 runs with two terminals: one for L1, one for L2. A third terminal is used for deploying, querying, and interacting.</p>
+<p>All commands are run from the repository root.</p>
+<h3 id="setup"><a class="header" href="#setup">Setup</a></h3>
+<p>Build the binary first (this compiles the Solidity contracts and embeds them):</p>
+<pre><code class="language-shell">COMPILE_CONTRACTS=true cargo build --release --features l2,l2-sql
+</code></pre>
+<p>Clean up any previous state:</p>
+<pre><code class="language-shell">rm -rf /tmp/ethrex_l1 /tmp/ethrex_l2
+</code></pre>
+<h4 id="terminal-1--start-l1"><a class="header" href="#terminal-1--start-l1">Terminal 1 — Start L1</a></h4>
+<p>Start a local ethrex L1 with the EXECUTE precompile enabled. This uses a
+dedicated genesis (<code>l1_native.json</code>) that activates the LStar fork, which is
+what turns address <code>0x0101</code> into the <code>EXECUTE</code> precompile:</p>
+<pre><code class="language-shell">./target/release/ethrex \
+  --network fixtures/genesis/l1_native.json \
+  --http.port 8545 --http.addr 0.0.0.0 --authrpc.port 8551 \
+  --dev --datadir /tmp/ethrex_l1
+</code></pre>
+<p>Wait until you see L1 producing blocks (the <code>--dev</code> flag auto-mines).</p>
+<h4 id="terminal-2--deploy-contracts-and-start-l2"><a class="header" href="#terminal-2--deploy-contracts-and-start-l2">Terminal 2 — Deploy contracts and start L2</a></h4>
+<p>Deploy <code>NativeRollup.sol</code> to L1 and generate the L2 genesis:</p>
+<pre><code class="language-shell">./target/release/ethrex l2 deploy \
+  --eth-rpc-url http://localhost:8545 \
+  --private-key 0x385c546456b6a603a1cfcaa9ec9494ba4832da08dd6bcf4de9a71e4a01b74924 \
+  --native-rollups \
+  --native-rollups.relayer-pk 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d \
+  --native-rollups.finality-delay 0 \
+  --l2-gas-limit 15000000 \
+  --genesis-l2-path fixtures/genesis/native_l2.json
+</code></pre>
+<blockquote>
+<p><strong><code>--l2-gas-limit</code></strong>: <code>advance()</code> re-executes the whole L2 block inside a single
+L1 transaction, so this value must stay under the L1 per-transaction gas cap
+(EIP-7825, 16,777,216) with headroom for the precompile’s witness/bookkeeping
+gas. <code>15000000</code> is the tested value; the deployer rejects anything above the cap
+and the immutable contract enforces the same bound in its constructor.</p>
+<p><strong><code>--native-rollups.finality-delay 0</code></strong>: instant finality, <strong>local demo only</strong>.
+The value is baked immutably into the contract, has no default, and a production
+deployment must pass a reorg-safe delay in seconds.</p>
+</blockquote>
+<p>You should see output like:</p>
+<pre><code>NativeRollup.sol deployed at: 0x...
+Contract address written to cmd/.env
+</code></pre>
+<p>Load the contract address and start the L2 node:</p>
+<pre><code class="language-shell">source cmd/.env
+
+./target/release/ethrex l2 \
+  --native-rollups \
+  --native-rollups.contract-address $ETHREX_NATIVE_ROLLUP_CONTRACT_ADDRESS \
+  --native-rollups.relayer-pk 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d \
+  --native-rollups.l1-pk 0x385c546456b6a603a1cfcaa9ec9494ba4832da08dd6bcf4de9a71e4a01b74924 \
+  --network fixtures/genesis/native_l2.json \
+  --http.port 1729 --http.addr 0.0.0.0 \
+  --datadir /tmp/ethrex_l2 \
+  --eth.rpc-url http://localhost:8545 \
+  --no-monitor
+</code></pre>
+<h3 id="step-1-verify-the-l2-is-advancing"><a class="header" href="#step-1-verify-the-l2-is-advancing">Step 1: Verify the L2 is advancing</a></h3>
+<p>Once the L2 is running, you should see log lines like:</p>
+<pre><code>NativeBlockProducer: produced block N (0x...) with M txs, gas_used=X
+NativeL1Advancer: advanced block N on L1 (state_root=0x..., l1_msgs=0, tx=Some(0x...))
+</code></pre>
+<p>Query the L1 contract to verify:</p>
+<pre><code class="language-shell">source cmd/.env
+
+# L2 block number committed to L1
+rex call $ETHREX_NATIVE_ROLLUP_CONTRACT_ADDRESS "blockNumber()" --rpc-url http://localhost:8545
+
+# L2 block number from the L2 RPC directly
+rex block-number --rpc-url http://localhost:1729
+</code></pre>
+<p>The L1 value should trail the L2 value by a few blocks (the advancer runs on a configurable interval).</p>
+<h3 id="step-2-query-contract-state"><a class="header" href="#step-2-query-contract-state">Step 2: Query contract state</a></h3>
+<p>The <code>NativeRollup.sol</code> contract exposes public getters for all its state:</p>
+<pre><code class="language-shell"># Current L2 state root
+rex call $ETHREX_NATIVE_ROLLUP_CONTRACT_ADDRESS "stateRoot()" --rpc-url http://localhost:8545
+
+# Current L2 block hash
+rex call $ETHREX_NATIVE_ROLLUP_CONTRACT_ADDRESS "blockHash()" --rpc-url http://localhost:8545
+
+# Block gas limit
+rex call $ETHREX_NATIVE_ROLLUP_CONTRACT_ADDRESS "l2GasLimit()" --rpc-url http://localhost:8545
+
+# Chain ID
+rex call $ETHREX_NATIVE_ROLLUP_CONTRACT_ADDRESS "chainId()" --rpc-url http://localhost:8545
+</code></pre>
+<h3 id="step-3-deposit-eth-l1--l2"><a class="header" href="#step-3-deposit-eth-l1--l2">Step 3: Deposit ETH (L1 → L2)</a></h3>
+<p>Send ETH from L1 to a fresh account on L2.</p>
+<pre><code class="language-shell"># Pick a fresh address (not pre-funded on L2)
+# Private key 0x42 → address 0x6f4c950442e1af093bcff730381e63ae9171b87a
+DEPOSIT_TO=0x6f4c950442e1af093bcff730381e63ae9171b87a
+
+# Check L2 balance is 0
+rex balance $DEPOSIT_TO --rpc-url http://localhost:1729
+
+# Deposit 1 ETH via sendL1Message(to, gasLimit, data)
+# Note: --value is in wei (1 ETH = 1000000000000000000)
+rex send $ETHREX_NATIVE_ROLLUP_CONTRACT_ADDRESS \
+  "sendL1Message(address,uint256,bytes)" \
+  $DEPOSIT_TO 105000 "" \
+  --value 1000000000000000000 \
+  --rpc-url http://localhost:8545 \
+  -k 0xbcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31
+
+# Watch the L2 logs in Terminal 2 — the watcher picks up the message and
+# the block producer includes a relayer tx for it.
+
+# After ~10 seconds, check the L2 balance:
+rex balance $DEPOSIT_TO --rpc-url http://localhost:1729
+# Should show 1000000000000000000 (1 ETH in wei)
+</code></pre>
+<h3 id="step-4-deploy-a-contract-on-l2-and-call-it-from-l1"><a class="header" href="#step-4-deploy-a-contract-on-l2-and-call-it-from-l1">Step 4: Deploy a contract on L2 and call it from L1</a></h3>
+<p>This step demonstrates that L1→L2 messages can carry arbitrary calldata, not just ETH transfers. We deploy a Counter contract on L2, then increment it by sending a message from L1.</p>
+<pre><code class="language-shell"># Deploy Counter.sol on L2 (increment + get functions)
+# Uses the deposit recipient account (funded with 1 ETH in Step 3)
+rex deploy --contract-path crates/l2/contracts/src/example/Counter.sol \
+  --remappings "" \
+  --rpc-url http://localhost:1729 \
+  --private-key 0x0000000000000000000000000000000000000000000000000000000000000042
+# Note the deployed contract address from the output
+COUNTER=&lt;deployed_address&gt;
+
+# Verify counter starts at 0
+rex call $COUNTER "count()" --rpc-url http://localhost:1729
+
+# Send an L1 message that calls increment() on the counter
+# increment() selector = 0xd09de08a (pass without 0x prefix as bytes arg)
+rex send $ETHREX_NATIVE_ROLLUP_CONTRACT_ADDRESS \
+  "sendL1Message(address,uint256,bytes)" \
+  $COUNTER 105000 d09de08a \
+  --value 0 \
+  --rpc-url http://localhost:8545 \
+  -k 0xbcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31
+
+# Wait ~10 seconds for the L2 to process the L1 message, then check:
+rex call $COUNTER "count()" --rpc-url http://localhost:1729
+# Should return 1
+</code></pre>
+<h3 id="step-5-withdraw-eth-l2--l1"><a class="header" href="#step-5-withdraw-eth-l2--l1">Step 5: Withdraw ETH (L2 → L1)</a></h3>
+<p>Send ETH from L2 back to an L1 address.</p>
+<pre><code class="language-shell"># L1 receiver address (the deployer account)
+L1_RECEIVER=0xE25583099BA105D9ec0A67f5Ae86D90e50036425
+
+# Record L1 balance before
+rex balance $L1_RECEIVER --rpc-url http://localhost:8545
+
+# Withdraw 0.5 ETH from L2 via L2Bridge.withdraw(receiver)
+# Uses the test account's private key (0x42)
+rex send 0x000000000000000000000000000000000000fffd \
+  "withdraw(address)" \
+  $L1_RECEIVER \
+  --value 500000000000000000 \
+  --rpc-url http://localhost:1729 \
+  -k 0x0000000000000000000000000000000000000000000000000000000000000042
+</code></pre>
+<p>Wait for the L2 block containing the withdrawal to be advanced on L1 (watch the advancer logs in Terminal 2).</p>
+<p>Then claim the withdrawal on L1 (replace <code>TX_HASH</code> with the L2 withdrawal tx hash from the output above):</p>
+<pre><code class="language-shell"># Fetches the proof from L2 and claims the withdrawal on L1 in one step
+rex l2 claim-native-withdraw TX_HASH \
+  0xbcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31 \
+  $ETHREX_NATIVE_ROLLUP_CONTRACT_ADDRESS \
+  http://localhost:8545 \
+  http://localhost:1729
+
+# Verify the L1 balance increased
+rex balance $L1_RECEIVER --rpc-url http://localhost:8545
+</code></pre>
+<blockquote class="blockquote-tag blockquote-tag-tip">
+<p class="blockquote-tag-title"><svg viewbox="0 0 16 16" width="18" height="18"><path d="M8 1.5c-2.363 0-4 1.69-4 3.75 0 .984.424 1.625.984 2.304l.214.253c.223.264.47.556.673.848.284.411.537.896.621 1.49a.75.75 0 0 1-1.484.211c-.04-.282-.163-.547-.37-.847a8.456 8.456 0 0 0-.542-.68c-.084-.1-.173-.205-.268-.32C3.201 7.75 2.5 6.766 2.5 5.25 2.5 2.31 4.863 0 8 0s5.5 2.31 5.5 5.25c0 1.516-.701 2.5-1.328 3.259-.095.115-.184.22-.268.319-.207.245-.383.453-.541.681-.208.3-.33.565-.37.847a.751.751 0 0 1-1.485-.212c.084-.593.337-1.078.621-1.489.203-.292.45-.584.673-.848.075-.088.147-.173.213-.253.561-.679.985-1.32.985-2.304 0-2.06-1.637-3.75-4-3.75ZM5.75 12h4.5a.75.75 0 0 1 0 1.5h-4.5a.75.75 0 0 1 0-1.5ZM6 15.25a.75.75 0 0 1 .75-.75h2.5a.75.75 0 0 1 0 1.5h-2.5a.75.75 0 0 1-.75-.75Z"></path></svg>Tip</p>
+<p>The integration test at <code>test/tests/l2/native_rollup.rs</code> automates the full deposit/withdraw/counter roundtrip including proof fetching and claim submission. Run it with:</p>
+<pre><code class="language-shell">cargo test -p ethrex-test --features l2 -- l2::native_rollup --nocapture
+</code></pre>
+</blockquote>
+<h3 id="step-6-verify-precompile-usage-with-blockscout"><a class="header" href="#step-6-verify-precompile-usage-with-blockscout">Step 6: Verify precompile usage with Blockscout</a></h3>
+<p>Run a <a href="https://github.com/blockscout/blockscout">Blockscout</a> block explorer against the L1 to visually confirm that each <code>advance()</code> transaction triggers an internal CALL to the EXECUTE precompile at <code>0x0000...0101</code>.</p>
+<p>Requires Docker and a local clone of <a href="https://github.com/blockscout/blockscout">Blockscout</a>.</p>
+<h4 id="set-up-blockscout"><a class="header" href="#set-up-blockscout">Set up Blockscout</a></h4>
+<p>Clone Blockscout and enable the smart contract verifier (needed to decode method names):</p>
+<pre><code class="language-shell">git clone https://github.com/blockscout/blockscout.git ~/Documents/blockscout
+cd ~/Documents/blockscout/docker-compose
+</code></pre>
+<p>Add the <code>smart-contract-verifier</code> service to <code>geth.yml</code> (after the <code>sig-provider</code> service):</p>
+<pre><code class="language-yaml">  smart-contract-verifier:
+    extends:
+      file: ./services/smart-contract-verifier.yml
+      service: smart-contract-verifier
+</code></pre>
+<p>Enable it in <code>envs/common-blockscout.env</code> — find the commented-out verifier lines and replace them with:</p>
+<pre><code>MICROSERVICE_SC_VERIFIER_ENABLED=true
+MICROSERVICE_SC_VERIFIER_URL=http://smart-contract-verifier:8050/
+MICROSERVICE_SC_VERIFIER_TYPE=sc_verifier
+</code></pre>
+<h4 id="start-blockscout"><a class="header" href="#start-blockscout">Start Blockscout</a></h4>
+<p>With L1 and L2 already running:</p>
+<pre><code class="language-shell">cd ~/Documents/blockscout/docker-compose
+docker compose -f geth.yml up -d
+</code></pre>
+<p>Wait for Blockscout to finish indexing before proceeding. The more blocks L1 has already mined, the longer this takes (typically 1-2 minutes). You can check progress at http://localhost or via the API:</p>
+<pre><code class="language-shell">curl -s 'http://localhost/api/v2/main-page/indexing-status' | python3 -m json.tool
+# Wait until "finished_indexing_blocks": true and "indexed_blocks_ratio": "1.00"
+</code></pre>
+<p>Then open http://localhost.</p>
+<h4 id="verify-the-nativerollup-contract"><a class="header" href="#verify-the-nativerollup-contract">Verify the NativeRollup contract</a></h4>
+<p>Verifying the contract in Blockscout lets it decode function selectors (like <code>0x069c7eee</code>) into human-readable method names (like <code>advance</code>). This uses Blockscout’s built-in verification API — it’s completely local and free.</p>
+<blockquote class="blockquote-tag blockquote-tag-important">
+<p class="blockquote-tag-title"><svg viewbox="0 0 16 16" width="18" height="18"><path d="M0 1.75C0 .784.784 0 1.75 0h12.5C15.216 0 16 .784 16 1.75v9.5A1.75 1.75 0 0 1 14.25 13H8.06l-2.573 2.573A1.458 1.458 0 0 1 3 14.543V13H1.75A1.75 1.75 0 0 1 0 11.25Zm1.75-.25a.25.25 0 0 0-.25.25v9.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h6.5a.25.25 0 0 0 .25-.25v-9.5a.25.25 0 0 0-.25-.25Zm7 2.25v2.5a.75.75 0 0 1-1.5 0v-2.5a.75.75 0 0 1 1.5 0ZM9 9a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"></path></svg>Important</p>
+<p>The contract must be fully indexed before verification works. If the script fails with <code>Address is not a smart-contract</code>, wait another 30 seconds and retry — Blockscout is still processing.</p>
+</blockquote>
+<p>From the ethrex repo root, run:</p>
+<pre><code class="language-shell">python3 tooling/l2/dev/blockscout_verify_native_rollup.py $ETHREX_NATIVE_ROLLUP_CONTRACT_ADDRESS
+</code></pre>
+<p>You should see <code>Contract verified successfully!</code>. Now Blockscout will show decoded method names, event names, and parameter values for all interactions with the contract.</p>
+<h4 id="what-to-look-for"><a class="header" href="#what-to-look-for">What to look for</a></h4>
+<p>On the homepage you should see <code>advance</code> transactions from the advancer to the NativeRollup contract. Click any of them and check:</p>
+<ul>
+<li><strong>Internal txns</strong> tab: shows <code>Call | Success | 0xC5...7600 → 0x00...0101</code> — the NativeRollup contract calling the EXECUTE precompile.</li>
+<li><strong>Logs</strong> tab: shows the <code>StateAdvanced</code> event with the new L2 block number and state root.</li>
+</ul>
+<h4 id="stop-blockscout"><a class="header" href="#stop-blockscout">Stop Blockscout</a></h4>
+<pre><code class="language-shell">cd ~/Documents/blockscout/docker-compose
+docker compose -f geth.yml down -v
+rm -rf services/blockscout-db-data services/stats-db-data
+</code></pre>
+<h3 id="cleaning-up"><a class="header" href="#cleaning-up">Cleaning up</a></h3>
+<p>Remove the databases to start fresh:</p>
+<pre><code class="language-shell">rm -rf /tmp/ethrex_l1 /tmp/ethrex_l2
+</code></pre>
+<h2 id="further-reading"><a class="header" href="#further-reading">Further reading</a></h2>
+<ul>
+<li><a href="../../vm/levm/native_rollups.html">EXECUTE precompile architecture</a> — detailed specification of the precompile, contracts, gap analysis vs the L2Beat native rollups spec, and L1 message mechanism</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../../l2/deployment/based.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../../l2/deployment/aligned.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../../l2/deployment/based.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../../l2/deployment/aligned.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../../mark-09e88c2c.min.js"></script>
+        <script src="../../searcher-c2a407aa.js"></script>
+
+        <script src="../../clipboard-1626706a.min.js"></script>
+        <script src="../../highlight-abc7f01d.js"></script>
+        <script src="../../book-a0b12cfe.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="../../mermaid-eefea253.min.js"></script>
+        <script src="../../mermaid-init-ccf746f1.js"></script>
+
+
+
+    </div>
+    </body>
+</html>

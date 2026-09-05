@@ -1,0 +1,493 @@
+<!DOCTYPE HTML>
+<html lang="en" class="light sidebar-visible" dir="ltr">
+    <head>
+        <!-- Book generated using mdBook -->
+        <meta charset="UTF-8">
+        <title>Historical chain backfill - Ethrex</title>
+
+
+        <!-- Custom HTML head -->
+
+        <meta name="description" content="">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta name="theme-color" content="#ffffff">
+
+        <link rel="shortcut icon" href="../../favicon-65f98953.png">
+        <link rel="stylesheet" href="../../css/variables-8adf115d.css">
+        <link rel="stylesheet" href="../../css/general-2459343d.css">
+        <link rel="stylesheet" href="../../css/chrome-ae938929.css">
+        <link rel="stylesheet" href="../../css/print-9e4910d8.css" media="print">
+
+        <!-- Fonts -->
+        <link rel="stylesheet" href="../../fonts/fonts-9644e21d.css">
+
+        <!-- Highlight.js Stylesheets -->
+        <link rel="stylesheet" id="mdbook-highlight-css" href="../../highlight-493f70e1.css">
+        <link rel="stylesheet" id="mdbook-tomorrow-night-css" href="../../tomorrow-night-4c0ae647.css">
+        <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="../../ayu-highlight-3fdfc3ac.css">
+
+        <!-- Custom theme stylesheets -->
+
+
+        <!-- Provide site root and default themes to javascript -->
+        <script>
+            const path_to_root = "../../";
+            const default_light_theme = "light";
+            const default_dark_theme = "navy";
+            window.path_to_searchindex_js = "../../searchindex-8e6e5d72.js";
+        </script>
+        <!-- Start loading toc.js asap -->
+        <script src="../../toc-c68b2aa5.js"></script>
+    </head>
+    <body>
+    <div id="mdbook-help-container">
+        <div id="mdbook-help-popup">
+            <h2 class="mdbook-help-title">Keyboard shortcuts</h2>
+            <div>
+                <p>Press <kbd>←</kbd> or <kbd>→</kbd> to navigate between chapters</p>
+                <p>Press <kbd>S</kbd> or <kbd>/</kbd> to search in the book</p>
+                <p>Press <kbd>?</kbd> to show this help</p>
+                <p>Press <kbd>Esc</kbd> to hide this help</p>
+            </div>
+        </div>
+    </div>
+    <div id="mdbook-body-container">
+        <!-- Work around some values being stored in localStorage wrapped in quotes -->
+        <script>
+            try {
+                let theme = localStorage.getItem('mdbook-theme');
+                let sidebar = localStorage.getItem('mdbook-sidebar');
+
+                if (theme.startsWith('"') && theme.endsWith('"')) {
+                    localStorage.setItem('mdbook-theme', theme.slice(1, theme.length - 1));
+                }
+
+                if (sidebar.startsWith('"') && sidebar.endsWith('"')) {
+                    localStorage.setItem('mdbook-sidebar', sidebar.slice(1, sidebar.length - 1));
+                }
+            } catch (e) { }
+        </script>
+
+        <!-- Set the theme before any content is loaded, prevents flash -->
+        <script>
+            const default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? default_dark_theme : default_light_theme;
+            let theme;
+            try { theme = localStorage.getItem('mdbook-theme'); } catch(e) { }
+            if (theme === null || theme === undefined) { theme = default_theme; }
+            const html = document.documentElement;
+            html.classList.remove('light')
+            html.classList.add(theme);
+            html.classList.add("js");
+        </script>
+
+        <input type="checkbox" id="mdbook-sidebar-toggle-anchor" class="hidden">
+
+        <!-- Hide / unhide sidebar before it is displayed -->
+        <script>
+            let sidebar = null;
+            const sidebar_toggle = document.getElementById("mdbook-sidebar-toggle-anchor");
+            if (document.body.clientWidth >= 1080) {
+                try { sidebar = localStorage.getItem('mdbook-sidebar'); } catch(e) { }
+                sidebar = sidebar || 'visible';
+            } else {
+                sidebar = 'hidden';
+                sidebar_toggle.checked = false;
+            }
+            if (sidebar === 'visible') {
+                sidebar_toggle.checked = true;
+            } else {
+                html.classList.remove('sidebar-visible');
+            }
+        </script>
+
+        <nav id="mdbook-sidebar" class="sidebar" aria-label="Table of contents">
+            <!-- populated by js -->
+            <mdbook-sidebar-scrollbox class="sidebar-scrollbox"></mdbook-sidebar-scrollbox>
+            <noscript>
+                <iframe class="sidebar-iframe-outer" src="../../toc.html"></iframe>
+            </noscript>
+            <div id="mdbook-sidebar-resize-handle" class="sidebar-resize-handle">
+                <div class="sidebar-resize-indicator"></div>
+            </div>
+        </nav>
+
+        <div id="mdbook-page-wrapper" class="page-wrapper">
+
+            <div class="page">
+                <div id="mdbook-menu-bar-hover-placeholder"></div>
+                <div id="mdbook-menu-bar" class="menu-bar sticky">
+                    <div class="left-buttons">
+                        <label id="mdbook-sidebar-toggle" class="icon-button" for="mdbook-sidebar-toggle-anchor" title="Toggle Table of Contents" aria-label="Toggle Table of Contents" aria-controls="mdbook-sidebar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M0 96C0 78.3 14.3 64 32 64H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32C14.3 128 0 113.7 0 96zM0 256c0-17.7 14.3-32 32-32H416c17.7 0 32 14.3 32 32s-14.3 32-32 32H32c-17.7 0-32-14.3-32-32zM448 416c0 17.7-14.3 32-32 32H32c-17.7 0-32-14.3-32-32s14.3-32 32-32H416c17.7 0 32 14.3 32 32z"/></svg></span>
+                        </label>
+                        <button id="mdbook-theme-toggle" class="icon-button" type="button" title="Change theme" aria-label="Change theme" aria-haspopup="true" aria-expanded="false" aria-controls="mdbook-theme-list">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M371.3 367.1c27.3-3.9 51.9-19.4 67.2-42.9L600.2 74.1c12.6-19.5 9.4-45.3-7.6-61.2S549.7-4.4 531.1 9.6L294.4 187.2c-24 18-38.2 46.1-38.4 76.1L371.3 367.1zm-19.6 25.4l-116-104.4C175.9 290.3 128 339.6 128 400c0 3.9 .2 7.8 .6 11.6c1.8 17.5-10.2 36.4-27.8 36.4H96c-17.7 0-32 14.3-32 32s14.3 32 32 32H240c61.9 0 112-50.1 112-112c0-2.5-.1-5-.2-7.5z"/></svg></span>
+                        </button>
+                        <ul id="mdbook-theme-list" class="theme-popup" aria-label="Themes" role="menu">
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-default_theme">Auto</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-light">Light</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-rust">Rust</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-coal">Coal</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-navy">Navy</button></li>
+                            <li role="none"><button role="menuitem" class="theme" id="mdbook-theme-ayu">Ayu</button></li>
+                        </ul>
+                        <button id="mdbook-search-toggle" class="icon-button" type="button" title="Search (`/`)" aria-label="Toggle Searchbar" aria-expanded="false" aria-keyshortcuts="/ s" aria-controls="mdbook-searchbar">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M416 208c0 45.9-14.9 88.3-40 122.7L502.6 457.4c12.5 12.5 12.5 32.8 0 45.3s-32.8 12.5-45.3 0L330.7 376c-34.4 25.2-76.8 40-122.7 40C93.1 416 0 322.9 0 208S93.1 0 208 0S416 93.1 416 208zM208 352c79.5 0 144-64.5 144-144s-64.5-144-144-144S64 128.5 64 208s64.5 144 144 144z"/></svg></span>
+                        </button>
+                    </div>
+
+                    <h1 class="menu-title">Ethrex</h1>
+
+                    <div class="right-buttons">
+                        <a href="../../print.html" title="Print this book" aria-label="Print this book">
+                            <span class=fa-svg id="print-button"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M128 0C92.7 0 64 28.7 64 64v96h64V64H354.7L384 93.3V160h64V93.3c0-17-6.7-33.3-18.7-45.3L400 18.7C388 6.7 371.7 0 354.7 0H128zM384 352v32 64H128V384 368 352H384zm64 32h32c17.7 0 32-14.3 32-32V256c0-35.3-28.7-64-64-64H64c-35.3 0-64 28.7-64 64v96c0 17.7 14.3 32 32 32H64v64c0 35.3 28.7 64 64 64H384c35.3 0 64-28.7 64-64V384zm-16-88c-13.3 0-24-10.7-24-24s10.7-24 24-24s24 10.7 24 24s-10.7 24-24 24z"/></svg></span>
+                        </a>
+                        <a href="https://github.com/lambdaclass/ethrex" title="Git repository" aria-label="Git repository">
+                            <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6zm-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3zm44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9zM244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8zM97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1zm-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7zm32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1zm-11.4-14.7c-1.6 1-1.6 3.6 0 5.9 1.6 2.3 4.3 3.3 5.6 2.3 1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2z"/></svg></span>
+                        </a>
+
+                    </div>
+                </div>
+
+                <div id="mdbook-search-wrapper" class="hidden">
+                    <form id="mdbook-searchbar-outer" class="searchbar-outer">
+                        <div class="search-wrapper">
+                            <input type="search" id="mdbook-searchbar" name="searchbar" placeholder="Search this book ..." aria-controls="mdbook-searchresults-outer" aria-describedby="searchresults-header">
+                            <div class="spinner-wrapper">
+                                <span class=fa-svg id="fa-spin"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M304 48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zm0 416c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM48 304c26.5 0 48-21.5 48-48s-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48zm464-48c0-26.5-21.5-48-48-48s-48 21.5-48 48s21.5 48 48 48s48-21.5 48-48zM142.9 437c18.7-18.7 18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zm0-294.2c18.7-18.7 18.7-49.1 0-67.9S93.7 56.2 75 75s-18.7 49.1 0 67.9s49.1 18.7 67.9 0zM369.1 437c18.7 18.7 49.1 18.7 67.9 0s18.7-49.1 0-67.9s-49.1-18.7-67.9 0s-18.7 49.1 0 67.9z"/></svg></span>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="mdbook-searchresults-outer" class="searchresults-outer hidden">
+                        <div id="mdbook-searchresults-header" class="searchresults-header"></div>
+                        <ul id="mdbook-searchresults">
+                        </ul>
+                    </div>
+                </div>
+
+                <!-- Apply ARIA attributes after the sidebar and the sidebar toggle button are added to the DOM -->
+                <script>
+                    document.getElementById('mdbook-sidebar-toggle').setAttribute('aria-expanded', sidebar === 'visible');
+                    document.getElementById('mdbook-sidebar').setAttribute('aria-hidden', sidebar !== 'visible');
+                    Array.from(document.querySelectorAll('#mdbook-sidebar a')).forEach(function(link) {
+                        link.setAttribute('tabIndex', sidebar === 'visible' ? 0 : -1);
+                    });
+                </script>
+
+                <div id="mdbook-content" class="content">
+                    <main>
+                        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.4/dist/katex.min.css">
+<h1 id="historical-chain-backfill"><a class="header" href="#historical-chain-backfill">Historical chain backfill</a></h1>
+<p>A snap-synced node backfills only block <strong>headers</strong> below the sync pivot; it does
+not download the block bodies or receipts for pre-pivot blocks. As a result,
+historical RPC queries for those blocks return empty:
+<code>eth_getBlockByNumber</code>/<code>ByHash</code>, <code>eth_getBlockReceipts</code>,
+<code>eth_getTransactionByHash</code>, and <code>eth_getTransactionReceipt</code> return <code>null</code>, and
+<code>eth_getLogs</code> over a pre-pivot range fails.</p>
+<p>Historical chain backfill is an <strong>opt-in</strong> background process that downloads and
+validates the missing bodies and receipts after snap sync completes, so the node
+can serve historical block, transaction, receipt, and log queries. It is off by
+default, so a default node keeps its compact, headers-only footprint below the
+pivot.</p>
+<h2 id="enabling-it"><a class="header" href="#enabling-it">Enabling it</a></h2>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Flag</th><th>Env</th><th>Values</th><th>Default</th></tr>
+</thead>
+<tbody>
+<tr><td><code>--history.chain</code></td><td><code>ETHREX_HISTORY_CHAIN</code></td><td><code>off</code>, <code>postmerge</code>, <code>all</code>, or a block number</td><td><code>off</code></td></tr>
+<tr><td><code>--history.transactions</code></td><td><code>ETHREX_HISTORY_TRANSACTIONS</code></td><td>number of blocks (<code>0</code> = whole backfilled range)</td><td><code>0</code></td></tr>
+</tbody>
+</table>
+</div>
+<ul>
+<li><strong><code>off</code></strong> (default): headers-only below the pivot — current behavior.</li>
+<li><strong><code>postmerge</code></strong>: backfill down to the network’s merge (Paris) activation block.
+This is the recommended value: post-merge history is what the peer set reliably
+serves, and it is what most applications need.</li>
+<li><strong><code>all</code></strong>: backfill as far back as receipts exist in a decodable form, i.e.
+down to the <strong>Byzantium</strong> block (mainnet <code>4,370,000</code>), not genesis. Before
+Byzantium (EIP-658) a receipt’s first field is a post-state root rather than a
+status flag, a form ethrex does not represent, so those receipts can never be
+fetched. <strong>Best-effort</strong> — after the 2025 history expiry rollout many peers no
+longer serve pre-merge bodies/receipts, so this can stall at a block it cannot
+fetch (it reports the stall rather than failing the node).</li>
+<li><strong>a block number</strong> (e.g. <code>22000000</code>): backfill down to exactly that block and
+stop there. Use this to keep a recent slice of history instead of the whole
+post-merge range — far less disk and far less time than <code>postmerge</code>, which on
+mainnet is ~10M blocks. A value between the merge and Byzantium blocks is
+honoured on the same best-effort basis as <code>all</code>; anything below Byzantium is
+clamped up to it, with a warning, for the reason given above.</li>
+</ul>
+<p><code>--history.transactions</code> controls how far back the transaction-lookup index
+(<code>eth_getTransactionByHash</code>) is kept, independently of the block/receipt data,
+mirroring geth’s flag of the same name. <code>0</code> (the default) indexes the entire
+backfilled range; a non-zero <code>N</code> indexes only blocks within <code>N</code> of the chain head
+as it stood when the run started, and stores bodies/receipts for the rest without a
+tx-hash index.</p>
+<p>Two differences from geth’s flag are worth knowing. It only governs what backfill
+<em>writes</em>: nothing already indexed is ever un-indexed, and blocks above the sync
+pivot are indexed unconditionally by normal block import, so an <code>N</code> smaller than
+<code>head - pivot</code> has no effect on the range where the index is actually large. And
+the window is pinned to the head at task start rather than tracking the live head,
+so the boundary stays put over a run that can take weeks.</p>
+<h3 id="example"><a class="header" href="#example">Example</a></h3>
+<p>Run a node that serves post-merge history, keeping the transaction index for the
+whole backfilled range:</p>
+<pre><code class="language-sh">ethrex \
+  --authrpc.jwtsecret ./secrets/jwt.hex \
+  --network mainnet \
+  --history.chain postmerge
+</code></pre>
+<p>Backfill starts on its own once initial sync finishes — no restart or second
+command is needed.</p>
+<h3 id="upgrading-an-existing-node"><a class="header" href="#upgrading-an-existing-node">Upgrading an existing node</a></h3>
+<p><strong>An already-synced node does not need to resync.</strong> Add <code>--history.chain</code> and
+restart: backfill starts from the history the node already has and fills
+downward. There is no migration and no reindex — the feature writes to existing
+column families and does not change the store schema version, so an existing
+database opens unchanged.</p>
+<p>On the first startup after the upgrade, a one-time reconciliation corrects
+<code>earliest_block_number</code>, which on a node synced before this feature existed was
+left at genesis. Without it, backfill would compare that stale value against the
+floor and conclude there was nothing to do, so the correction runs <em>before</em> that
+check:</p>
+<pre><code>INFO Historical chain backfill enabled mode=PostMerge horizon=0
+INFO Reconciled backfill frontier to the lowest block with full chain data recorded=0 actual=25530850
+DEBUG History backfill advanced
+</code></pre>
+<p>The reconciliation bisects the database for the lowest block with a contiguous
+body (~25 reads on mainnet), which is the node’s original snap pivot. A node that
+full-synced from genesis reconciles to <code>0</code> and completes immediately, since it
+already holds all history.</p>
+<p>Note that the reconciliation only runs when backfill is enabled. An upgraded node
+left at <code>--history.chain off</code> keeps the stale <code>earliest_block_number</code>, so the
+<code>earliest</code> block tag still reports genesis even though pre-pivot bodies are
+absent. Enabling backfill (or a fresh snap sync) sets it correctly.</p>
+<h2 id="how-it-works"><a class="header" href="#how-it-works">How it works</a></h2>
+<p>Backfill fills in reverse — from the pivot downward toward a floor — one bounded
+batch (64 blocks) at a time. It runs at lower priority than following the chain
+head: it fills only while the node is synced to the tip, sleeps between batches,
+and never lets the tip fall behind. A node that restarts behind the head finishes
+catching up first, so backfill never competes with a catch-up for peers.</p>
+<pre class="mermaid">flowchart TD
+    spawned([Backfill task spawned]) --&gt; gate{"Initial sync finished?"}
+    gate -- no --&gt; wait["Idle 10s"] --&gt; gate
+    gate -- yes --&gt; reconcile["One-time: reconcile frontier to lowest full-data block"]
+    reconcile --&gt; floor{"Resolve floor for mode"}
+    floor --&gt; done0{"frontier ≤ floor?"}
+    done0 -- yes --&gt; complete([Complete])
+    done0 -- no --&gt; read["Read 64 canonical headers just below the frontier"]
+    read --&gt; fetch["Request receipts + bodies from an eth peer (form per negotiated version)"]
+    fetch --&gt; validate["Validate tx and receipts roots vs. headers; rebuild logs bloom"]
+    validate --&gt; commit["Atomic write: bodies + receipts + tx index + new frontier"]
+    commit --&gt; done0
+</pre>
+
+<p><strong>Floor.</strong> <code>postmerge</code> resolves the floor to the network’s Paris activation
+block — <code>merge_netsplit_block</code> when the chain config sets one, otherwise the
+first proof-of-stake block found by difficulty bisection (block <code>15,537,394</code> on
+mainnet). <code>all</code> uses the Byzantium block, and an explicit block number is used as
+the floor directly. Every mode is clamped so the floor never falls below Byzantium.
+If the chain never merged there is no post-merge segment, so <code>postmerge</code> keeps
+idling until it does.</p>
+<p>The floor is resolved once per run, not per batch, since neither the merge nor the
+Byzantium block moves. Changing it therefore takes a restart: lowering it resumes
+filling from wherever the frontier now sits, and raising it stops further filling
+while keeping everything already stored. Backfill stops as soon as the frontier
+reaches the floor, so a block number at or above the current frontier completes
+with nothing to do.</p>
+<p><strong>Frontier.</strong> Progress is tracked in <code>earliest_block_number</code> (the lowest block
+with full data). Each batch reads the canonical headers just below the frontier,
+fetches their bodies and receipts, and — on success — lowers the frontier.</p>
+<p><strong>Validation.</strong> Bodies and receipts are validated against the already-synced
+header chain (transactions root and receipts root) before being stored. A
+receipt’s logs bloom is recomputed from its logs, which reconstructs the bloom
+that eth/69 onward omits, so backfill works with peers on any supported eth
+version. The request form follows the version the connection negotiated: eth/68
+and eth/69 take the original <code>GetReceipts</code>, while eth/70 (EIP-7975) replaced it
+with a paginated form that eth/71 (EIP-8159, <code>requires: [7928, 7975]</code>) also uses.
+When a paginated response ends in a partial block, that trailing block is dropped
+and the response treated as a shorter prefix, so every stored block stays
+root-verified.</p>
+<p>Backfill throughput is bounded by how fast peers serve historical bodies and
+receipts. After the 2025 history-expiry rollout only a subset of peers still
+serve pre-merge/pre-pivot data, so on mainnet a full post-merge backfill runs on
+the order of weeks.</p>
+<h2 id="durability-and-restarts"><a class="header" href="#durability-and-restarts">Durability and restarts</a></h2>
+<p>Backfill is crash-safe by construction: a node shutdown mid-backfill never
+corrupts the database and always resumes exactly where it left off.</p>
+<ul>
+<li><strong>Each batch is one atomic write.</strong> A batch’s block bodies, receipts,
+transaction-index entries, <strong>and</strong> the updated frontier
+(<code>earliest_block_number</code>) are committed in a single RocksDB write batch. The
+frontier can never advance without its block data landing, or vice versa — so
+there is no ordering in which the on-disk state is left torn.</li>
+<li><strong>The frontier is the durable resume cursor.</strong> On restart the task re-reads
+<code>earliest_block_number</code> and continues from there. The invariant <em>“every block in
+<code>[frontier, head]</code> has full bodies and receipts”</em> holds across any restart. The
+first batch of a run deliberately includes the frontier block itself: on a
+snap-synced node that block is the pivot, and snap stored only its body, so its
+receipts need filling before the invariant is true.</li>
+<li><strong>Worst case after an abrupt kill</strong> (e.g. <code>docker restart -t 0</code>, power loss) is
+re-fetching the single most-recent batch: an un-fsynced write-ahead-log tail is
+discarded on RocksDB recovery, and because the frontier and its data share one
+atomic batch, they are lost together — never half-applied. A graceful shutdown
+fsyncs the database, so nothing is re-fetched.</li>
+<li><strong>Self-healing on startup.</strong> A one-time reconciliation bisects the database for
+the true lowest full-data block and corrects <code>earliest_block_number</code> if it
+drifted — for example a node that snap-synced before this feature existed and
+left the value at genesis. This runs before filling resumes.</li>
+</ul>
+<p>Because the only persistent effect of a batch is that atomic commit, the task is
+simply dropped on shutdown rather than drained; there is nothing to clean up.</p>
+<h2 id="observing-progress"><a class="header" href="#observing-progress">Observing progress</a></h2>
+<p>Per-batch advances are logged at <code>debug</code> level, so at the default <code>info</code> level a
+healthy backfill is quiet between the start and completion messages:</p>
+<div class="table-wrapper">
+<table>
+<thead>
+<tr><th>Message</th><th>Level</th><th>When</th></tr>
+</thead>
+<tbody>
+<tr><td><code>Historical chain backfill enabled</code></td><td>info</td><td>task starts</td></tr>
+<tr><td><code>Reconciled backfill frontier ...</code></td><td>info</td><td>startup, only if the frontier drifted</td></tr>
+<tr><td><code>History backfill advanced</code></td><td>debug</td><td>each batch</td></tr>
+<tr><td><code>Historical chain backfill complete</code></td><td>info</td><td>frontier reaches the floor</td></tr>
+<tr><td><code>History backfill step failed (will retry)</code></td><td>warn</td><td>a batch failed; it retries</td></tr>
+<tr><td><code>History backfill is not advancing</code></td><td>warn</td><td>no peer served the needed range for several minutes; also sets <code>backfill_stalled</code> in the sync diagnostics</td></tr>
+<tr><td><code>History backfill resumed</code></td><td>info</td><td>progress returned after a stall</td></tr>
+</tbody>
+</table>
+</div>
+<p>For continuous, log-level-independent visibility, enable metrics
+(<code>--metrics</code>) and watch the <code>ethrex_db_backfill_frontier_block</code> gauge descend
+toward the floor. See <a href="../../developers/l1/db-observability.html">DB observability</a>
+for the metric and its Grafana panel.</p>
+<h3 id="verifying-it-worked"><a class="header" href="#verifying-it-worked">Verifying it worked</a></h3>
+<p>Pick a post-merge block below your original sync pivot and confirm its body and
+receipts are now present (replace the block number with one in your backfilled
+range):</p>
+<pre><code class="language-sh"># Full block with transactions — returns the block instead of null once backfilled
+curl -s http://localhost:8545 -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["0x1000000", true]}'
+
+# Receipts for the same block
+curl -s http://localhost:8545 -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"eth_getBlockReceipts","params":["0x1000000"]}'
+</code></pre>
+<p>Before backfill reaches that height both return <code>null</code>/empty; afterward they
+return the full block and its receipts.</p>
+<h2 id="limitations"><a class="header" href="#limitations">Limitations</a></h2>
+<ul>
+<li><strong>Not an archive node.</strong> Backfill restores historical <em>chain</em> data (blocks,
+transactions, receipts, logs); it does not restore historical <em>state</em>.
+<code>eth_call</code>, <code>eth_getBalance</code>, and tracing at old block heights remain bounded to
+the recent in-memory state window regardless of this setting.</li>
+<li><strong><code>eth_getLogs</code> becomes correct, not fast.</strong> Backfill lets historical log
+queries return results instead of failing, but there is no log/bloom index, so
+wide historical ranges are still served by a linear per-block bloom scan.</li>
+<li><strong><code>all</code> is best-effort, and stops at Byzantium.</strong> Pre-Byzantium receipts use the
+pre-EIP-658 post-state-root form, which ethrex cannot represent, so no mode
+descends below that block. Above it, many peers no longer serve pre-merge
+bodies/receipts, so <code>all</code> can stall at a block it cannot fetch; it reports the
+stall and keeps retrying rather than failing the node.</li>
+<li><strong>A single block whose receipts exceed 10 MiB cannot be fetched.</strong> Requests ask
+for receipt index <code>0</code> and drop an incomplete trailing block, so backfill never
+paginates within a block. Such a block would stall the run rather than being
+skipped. Not reachable at today’s gas limits, but it is the case EIP-7975’s
+<code>firstBlockReceiptIndex</code> exists for.</li>
+<li><strong><code>--history.transactions</code> does not prune.</strong> It bounds what backfill indexes, but
+never removes existing index entries, and blocks above the sync pivot are always
+indexed by normal import. Shrinking it on an already-indexed node frees nothing.</li>
+</ul>
+<h2 id="cost"><a class="header" href="#cost">Cost</a></h2>
+<p>Enabling backfill adds a substantial amount of disk usage, since it stores the
+bodies and receipts a headers-only node omits. A complete <code>postmerge</code> run measured
+on mainnet filled 9,993,456 blocks in about 14 days and added <strong>~1.0 TB of history
+on top of state</strong>, averaging <strong>~105 KiB per block</strong>. See
+<a href="../../getting-started/hardware_requirements.html#with-historical-chain-backfill-enabled">Hardware requirements</a>
+for the per-column-family breakdown and recommended disk sizes.</p>
+<p>Because backfill walks from the pivot downward, the first blocks it fills are the
+most recent and largest. Per-block cost drops as it reaches older blocks (recent
+blocks measured ~125 KiB against the ~105 KiB full-range average), so throughput in
+blocks/day rises over the course of a run and an early sample overestimates the
+final total.</p>
+<p>The <a href="../../developers/l1/db-observability.html">DB observability</a> dashboard breaks
+this growth down per column family (<code>bodies</code>, <code>receipts_v2</code>,
+<code>transaction_locations</code>). While filling, it uses spare network and CPU in the
+background; it is rate-limited and yields to chain-head following, so it does not
+slow down block processing.</p>
+<p>State size is unaffected: backfill adds chain history only, and does not change
+how much state the node keeps.</p>
+<h2 id="references"><a class="header" href="#references">References</a></h2>
+<ul>
+<li><a href="./sync_modes.html">Sync modes</a> — full vs. snap sync and where backfill fits.</li>
+<li><a href="./snap_sync.html">Snap sync internals</a> — why a snap-synced node is headers-only below the pivot.</li>
+<li><a href="./databases.html">Databases</a> — store schema versioning.</li>
+<li><a href="../../developers/l1/db-observability.html">DB observability</a> — the backfill-frontier metric and dashboard.</li>
+<li><a href="../../CLI.html">CLI reference</a> — full flag documentation.</li>
+<li>geth’s <a href="https://geth.ethereum.org/docs/fundamentals/command-line-options"><code>--history.chain</code> / <code>--history.transactions</code></a> flags, whose semantics this mirrors.</li>
+<li><a href="https://eips.ethereum.org/EIPS/eip-8159">EIP-8159</a> — the eth/71 receipts format backfill accepts.</li>
+</ul>
+
+                    </main>
+
+                    <nav class="nav-wrapper" aria-label="Page navigation">
+                        <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="../../l1/fundamentals/sync_modes.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                            </a>
+
+                            <a rel="next prefetch" href="../../l1/fundamentals/snap_sync.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                            </a>
+
+                        <div style="clear: both"></div>
+                    </nav>
+                </div>
+            </div>
+
+            <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="../../l1/fundamentals/sync_modes.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M41.4 233.4c-12.5 12.5-12.5 32.8 0 45.3l160 160c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L109.3 256 246.6 118.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0l-160 160z"/></svg></span>
+                    </a>
+
+                    <a rel="next prefetch" href="../../l1/fundamentals/snap_sync.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M278.6 233.4c12.5 12.5 12.5 32.8 0 45.3l-160 160c-12.5 12.5-32.8 12.5-45.3 0s-12.5-32.8 0-45.3L210.7 256 73.4 118.6c-12.5-12.5-12.5-32.8 0-45.3s32.8-12.5 45.3 0l160 160z"/></svg></span>
+                    </a>
+            </nav>
+
+        </div>
+
+        <template id=fa-eye><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 576 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M288 32c-80.8 0-145.5 36.8-192.6 80.6C48.6 156 17.3 208 2.5 243.7c-3.3 7.9-3.3 16.7 0 24.6C17.3 304 48.6 356 95.4 399.4C142.5 443.2 207.2 480 288 480s145.5-36.8 192.6-80.6c46.8-43.5 78.1-95.4 93-131.1c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C433.5 68.8 368.8 32 288 32zM432 256c0 79.5-64.5 144-144 144s-144-64.5-144-144s64.5-144 144-144s144 64.5 144 144zM288 192c0 35.3-28.7 64-64 64c-11.5 0-22.3-3-31.6-8.4c-.2 2.8-.4 5.5-.4 8.4c0 53 43 96 96 96s96-43 96-96s-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6z"/></svg></span></template>
+        <template id=fa-eye-slash><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M38.8 5.1C28.4-3.1 13.3-1.2 5.1 9.2S-1.2 34.7 9.2 42.9l592 464c10.4 8.2 25.5 6.3 33.7-4.1s6.3-25.5-4.1-33.7L525.6 386.7c39.6-40.6 66.4-86.1 79.9-118.4c3.3-7.9 3.3-16.7 0-24.6c-14.9-35.7-46.2-87.7-93-131.1C465.5 68.8 400.8 32 320 32c-68.2 0-125 26.3-169.3 60.8L38.8 5.1zM223.1 149.5C248.6 126.2 282.7 112 320 112c79.5 0 144 64.5 144 144c0 24.9-6.3 48.3-17.4 68.7L408 294.5c5.2-11.8 8-24.8 8-38.5c0-53-43-96-96-96c-2.8 0-5.6 .1-8.4 .4c5.3 9.3 8.4 20.1 8.4 31.6c0 10.2-2.4 19.8-6.6 28.3l-90.3-70.8zm223.1 298L373 389.9c-16.4 6.5-34.3 10.1-53 10.1c-79.5 0-144-64.5-144-144c0-6.9 .5-13.6 1.4-20.2L83.1 161.5C60.3 191.2 44 220.8 34.5 243.7c-3.3 7.9-3.3 16.7 0 24.6c14.9 35.7 46.2 87.7 93 131.1C174.5 443.2 239.2 480 320 480c47.8 0 89.9-12.9 126.2-32.5z"/></svg></span></template>
+        <template id=fa-copy><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M502.6 70.63l-61.25-61.25C435.4 3.371 427.2 0 418.7 0H255.1c-35.35 0-64 28.66-64 64l.0195 256C192 355.4 220.7 384 256 384h192c35.2 0 64-28.8 64-64V93.25C512 84.77 508.6 76.63 502.6 70.63zM464 320c0 8.836-7.164 16-16 16H255.1c-8.838 0-16-7.164-16-16L239.1 64.13c0-8.836 7.164-16 16-16h128L384 96c0 17.67 14.33 32 32 32h47.1V320zM272 448c0 8.836-7.164 16-16 16H63.1c-8.838 0-16-7.164-16-16L47.98 192.1c0-8.836 7.164-16 16-16H160V128H63.99c-35.35 0-64 28.65-64 64l.0098 256C.002 483.3 28.66 512 64 512h192c35.2 0 64-28.8 64-64v-32h-47.1L272 448z"/></svg></span></template>
+        <template id=fa-play><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 384 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M73 39c-14.8-9.1-33.4-9.4-48.5-.9S0 62.6 0 80V432c0 17.4 9.4 33.4 24.5 41.9s33.7 8.1 48.5-.9L361 297c14.3-8.7 23-24.2 23-41s-8.7-32.2-23-41L73 39z"/></svg></span></template>
+        <template id=fa-clock-rotate-left><span class=fa-svg><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.2.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2022 Fonticons, Inc. --><path d="M75 75L41 41C25.9 25.9 0 36.6 0 57.9V168c0 13.3 10.7 24 24 24H134.1c21.4 0 32.1-25.9 17-41l-30.8-30.8C155 85.5 203 64 256 64c106 0 192 86 192 192s-86 192-192 192c-40.8 0-78.6-12.7-109.7-34.4c-14.5-10.1-34.4-6.6-44.6 7.9s-6.6 34.4 7.9 44.6C151.2 495 201.7 512 256 512c141.4 0 256-114.6 256-256S397.4 0 256 0C185.3 0 121.3 28.7 75 75zm181 53c-13.3 0-24 10.7-24 24V256c0 6.4 2.5 12.5 7 17l72 72c9.4 9.4 24.6 9.4 33.9 0s9.4-24.6 0-33.9l-65-65V152c0-13.3-10.7-24-24-24z"/></svg></span></template>
+
+
+
+        <script>
+            window.playground_copyable = true;
+        </script>
+
+
+        <script src="../../elasticlunr-ef4e11c1.min.js"></script>
+        <script src="../../mark-09e88c2c.min.js"></script>
+        <script src="../../searcher-c2a407aa.js"></script>
+
+        <script src="../../clipboard-1626706a.min.js"></script>
+        <script src="../../highlight-abc7f01d.js"></script>
+        <script src="../../book-a0b12cfe.js"></script>
+
+        <!-- Custom JS scripts -->
+        <script src="../../mermaid-eefea253.min.js"></script>
+        <script src="../../mermaid-init-ccf746f1.js"></script>
+
+
+
+    </div>
+    </body>
+</html>
