@@ -1,7 +1,7 @@
 use crate::backends::levm::LEVM;
 use ethrex_common::H256;
 use ethrex_common::tracing::{CallTrace, OpcodeTraceResult, PrestateResult};
-use ethrex_common::types::{Block, BlockHeader, GenericTransaction};
+use ethrex_common::types::{Block, BlockHeader, GenericTransaction, Transaction};
 pub use ethrex_levm::erc7562_tracer::FrameEntry;
 pub use ethrex_levm::tracing::OpcodeTracerConfig;
 
@@ -111,6 +111,21 @@ impl Evm {
             ))?;
 
         LEVM::trace_tx_erc7562(&mut self.db, &block.header, tx, self.vm_type, self.crypto.as_ref())
+    }
+
+    /// Traces a standalone, not-yet-mined transaction with the ERC-7562/EIP-8141 native
+    /// frame tracer. Unlike [`Self::trace_tx_erc7562`] (which looks `tx` up by index
+    /// within an already-mined `Block`), this is the standalone counterpart of
+    /// [`Self::execute_tx`] -- it takes `tx`/`block_header` directly, the shape a caller
+    /// needs to trace a transaction that has no block or tx-index yet (e.g.
+    /// `ethrex_simulateFrameTransaction`'s opt-in `trace: true`, tracing a raw frame
+    /// transaction before it is submitted).
+    pub fn trace_tx_erc7562_standalone(
+        &mut self,
+        tx: &Transaction,
+        block_header: &BlockHeader,
+    ) -> Result<Vec<FrameEntry>, EvmError> {
+        LEVM::trace_tx_erc7562(&mut self.db, block_header, tx, self.vm_type, self.crypto.as_ref())
     }
 
     /// Traces a synthetic `eth_call`-shaped request with the ERC-7562/EIP-8141 native

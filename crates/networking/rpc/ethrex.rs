@@ -16,7 +16,8 @@ use ethrex_common::{
 };
 use ethrex_crypto::NativeCrypto;
 use ethrex_vm::backends::{FrameValidationOutcome, levm::get_max_allowed_gas_limit};
-use serde::Serialize;
+use ethrex_vm::tracing::FrameEntry;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
@@ -36,6 +37,22 @@ pub struct SimulateFrameTransactionRequest {
     pub transaction: Transaction,
     /// Block the simulation runs against. Defaults to `latest`.
     pub block: Option<BlockIdentifierOrHash>,
+    /// Opt-in flag (third param, `{"trace": true}`): when set, additionally run the
+    /// full `Erc7562FrameTracer` trace and populate
+    /// [`SimulateFrameTransactionResult::erc7562_trace`]. `false` (the default when the
+    /// third param is absent or `null`) is byte-for-byte the pre-existing behavior --
+    /// no tracer is constructed and no extra execution pass runs.
+    pub trace: bool,
+}
+
+/// Optional third param of `ethrex_simulateFrameTransaction`. Absent, `null`, or
+/// `{"trace": false}` all mean "do not trace" -- the same, unchanged behavior every
+/// caller got before this option existed.
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct SimulateFrameTransactionOptions {
+    #[serde(default)]
+    trace: bool,
 }
 
 /// Result of `ethrex_simulateFrameTransaction`.
@@ -81,6 +98,16 @@ struct SimulateFrameTransactionResult {
     /// the frame-tx exclusion model, or the payer was underfunded). `null`
     /// otherwise.
     execution_error: Option<String>,
+    /// Full `Erc7562FrameTracer` trace (opcode counts, accessed storage/transient
+    /// slots, EXTCODE access, contract sizes, Keccak preimages), one [`FrameEntry`]
+    /// per frame in the transaction. Populated only when the caller opted in with
+    /// the third param `{"trace": true}` AND the full execution actually ran
+    /// (`valid: true` and `frames.is_some()`); `null` otherwise -- including when
+    /// tracing was requested but the transaction was rejected before any execution
+    /// (an invalid prefix or the per-tx gas cap). Omitting `trace` (or passing
+    /// `{"trace": false}`) never constructs the tracer or runs the extra pass this
+    /// field requires, so untraced callers pay nothing for this field's existence.
+    erc7562_trace: Option<Vec<FrameEntry>>,
 }
 
 /// Per-frame execution outcome for the full-execution step.
@@ -109,9 +136,9 @@ impl RpcHandler for SimulateFrameTransactionRequest {
         let params = params
             .as_ref()
             .ok_or(RpcErr::BadParams("No params provided".to_owned()))?;
-        if params.is_empty() || params.len() > 2 {
+        if params.is_empty() || params.len() > 3 {
             return Err(RpcErr::BadParams(format!(
-                "Expected one or two params and {} were provided",
+                "Expected one to three params and {} were provided",
                 params.len()
             )));
         }
@@ -136,7 +163,22 @@ impl RpcHandler for SimulateFrameTransactionRequest {
             None => None,
         };
 
-        Ok(SimulateFrameTransactionRequest { transaction, block })
+        let trace = match params.get(2) {
+            Some(value) if !value.is_null() => {
+                let options: SimulateFrameTransactionOptions = serde_json::from_value(
+                    value.clone(),
+                )
+                .map_err(|error| RpcErr::BadParams(error.to_string()))?;
+                options.trace
+            }
+            _ => false,
+        };
+
+        Ok(SimulateFrameTransactionRequest {
+            transaction,
+            block,
+            trace,
+        })
     }
 
     async fn handle(&self, context: RpcApiContext) -> Result<Value, RpcErr> {
@@ -270,6 +312,7 @@ impl RpcHandler for SimulateFrameTransactionRequest {
                 frames: None,
                 execution_status: None,
                 execution_error: None,
+                erc7562_trace: None,
             });
         }
 
@@ -294,6 +337,7 @@ impl RpcHandler for SimulateFrameTransactionRequest {
                 frames: None,
                 execution_status: None,
                 execution_error: None,
+                erc7562_trace: None,
             });
         }
 
@@ -302,6 +346,17 @@ impl RpcHandler for SimulateFrameTransactionRequest {
         // mutated its own throwaway state) for accurate total + per-frame gas.
         let (gas_used, frames, execution_status, execution_error) =
             self.execute_for_gas(&context, &header, frame_tx.sender);
+
+        // Opt-in only: a caller who did not pass `{"trace": true}` never constructs
+        // the tracer or pays for this extra pass. When tracing IS requested, this
+        // runs on a THIRD fresh throwaway state -- same rationale as the gas pass
+        // running on its own separate state from the prefix simulation above -- only
+        // once the gas pass has proven the transaction actually executes.
+        let erc7562_trace = if self.trace && frames.is_some() {
+            self.execute_for_trace(&context, &header)
+        } else {
+            None
+        };
 
         to_value(SimulateFrameTransactionResult {
             valid: true,
@@ -313,6 +368,7 @@ impl RpcHandler for SimulateFrameTransactionRequest {
             frames,
             execution_status,
             execution_error,
+            erc7562_trace,
         })
     }
 }
@@ -393,6 +449,32 @@ impl SimulateFrameTransactionRequest {
             Err(error) => (None, None, None, Some(error.to_string())),
         }
     }
+
+    /// Runs the same transaction on ANOTHER fresh throwaway state, this time with
+    /// `Erc7562FrameTracer` active, to produce `erc7562_trace`. Only ever called
+    /// when the caller opted in with `{"trace": true}` -- so an untraced caller never
+    /// constructs the tracer or pays for this pass -- and only after
+    /// `execute_for_gas` has already shown the transaction executes.
+    ///
+    /// A separate pass rather than threading the tracer through `execute_for_gas`'s
+    /// call to `Evm::execute_tx`: that method is the single most-used execution entry
+    /// point in the codebase (block execution, mempool, L2 batching), so adding an
+    /// opt-in tracer parameter there would touch far more surface than reusing the
+    /// pattern this function already establishes -- `execute_for_gas` itself runs on
+    /// its own fresh state, separate from the prefix simulation before it, for the
+    /// identical reason: a throwaway state cannot be replayed once a pass has
+    /// mutated it. Returns `None` on any setup or execution error, since a failure
+    /// here should not take down the gas-measuring result this trace is layered on.
+    fn execute_for_trace(
+        &self,
+        context: &RpcApiContext,
+        header: &BlockHeader,
+    ) -> Option<Vec<FrameEntry>> {
+        let vm_db = StoreVmDatabase::new(context.storage.clone(), header.clone()).ok()?;
+        let mut vm = context.blockchain.new_evm(vm_db).ok()?;
+        vm.trace_tx_erc7562_standalone(&self.transaction, header)
+            .ok()
+    }
 }
 
 /// Builds the `{valid: false, ...}` response for a structurally invalid prefix
@@ -409,6 +491,7 @@ fn structurally_invalid(violation: String, max_cost: String) -> Result<Value, Rp
         frames: None,
         execution_status: None,
         execution_error: None,
+        erc7562_trace: None,
     })
 }
 
