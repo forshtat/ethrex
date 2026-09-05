@@ -192,6 +192,20 @@ impl OpcodeHandler for OpTLoadHandler {
             .increase_consumed_gas(gas_cost::TLOAD)?;
 
         let key = vm.current_call_frame.stack.pop1()?;
+
+        // ERC-7562/EIP-8141 validation-diagnostics: transient-read counter.
+        if vm.erc7562_tracer.active {
+            let address = vm.current_call_frame.to;
+            #[expect(unsafe_code)]
+            let slot = unsafe {
+                let mut hash = mem::transmute::<U256, H256>(key);
+                hash.0.reverse();
+                hash
+            };
+            vm.erc7562_tracer
+                .on_storage_access(Opcode::TLOAD as u8, slot, address, || H256::zero());
+        }
+
         vm.current_call_frame
             .stack
             .push(vm.substate.get_transient(&vm.current_call_frame.to, &key))?;
@@ -213,6 +227,20 @@ impl OpcodeHandler for OpTStoreHandler {
             .increase_consumed_gas(gas_cost::TSTORE)?;
 
         let [key, value] = *vm.current_call_frame.stack.pop()?;
+
+        // ERC-7562/EIP-8141 validation-diagnostics: transient-write counter.
+        if vm.erc7562_tracer.active {
+            let address = vm.current_call_frame.to;
+            #[expect(unsafe_code)]
+            let slot = unsafe {
+                let mut hash = mem::transmute::<U256, H256>(key);
+                hash.0.reverse();
+                hash
+            };
+            vm.erc7562_tracer
+                .on_storage_access(Opcode::TSTORE as u8, slot, address, || H256::zero());
+        }
+
         vm.substate
             .set_transient(&vm.current_call_frame.to, &key, value);
 
@@ -251,6 +279,18 @@ impl OpcodeHandler for OpSLoadHandler {
         }
 
         let value = vm.get_storage_value(address, key)?;
+
+        // ERC-7562/EIP-8141 validation-diagnostics: record the slot's
+        // pre-existing value on first touch. `value` is exactly the value
+        // this SLOAD is about to return, mirroring geth's
+        // `t.env.StateDB.GetState(addr, slot)` -- already computed above, so
+        // the closure is a zero-cost wrapper rather than a second state read.
+        if vm.erc7562_tracer.active {
+            vm.erc7562_tracer.on_storage_access(Opcode::SLOAD as u8, key, address, || {
+                H256::from(value.to_big_endian())
+            });
+        }
+
         vm.current_call_frame.stack.push(value)?;
 
         Ok(OpcodeResult::Continue)
@@ -318,6 +358,13 @@ impl OpcodeHandler for OpSStoreHandler {
         // deploy frame and only against the sender's own storage.
         if vm.validation_observer.active {
             vm.validation_check_sstore(to, key);
+        }
+
+        // ERC-7562/EIP-8141 validation-diagnostics: write counter (no value
+        // is ever recorded for a write, only the touch count).
+        if vm.erc7562_tracer.active {
+            vm.erc7562_tracer
+                .on_storage_access(Opcode::SSTORE as u8, key, to, || H256::zero());
         }
 
         // EIP-8037 (Amsterdam+): check if state gas is needed for new storage slot (0 -> nonzero),

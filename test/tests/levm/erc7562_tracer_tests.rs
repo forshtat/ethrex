@@ -4,7 +4,7 @@
 //! shape and the `begin_frame`/`enter`/`exit` push/pop-and-nest control flow
 //! wired into `execute_frame_tx`'s frame loop.
 
-use ethrex_common::Address;
+use ethrex_common::{Address, H256};
 use ethrex_levm::erc7562_tracer::Erc7562FrameTracer;
 use ethrex_levm::errors::{ExceptionalHalt, VMError};
 
@@ -345,4 +345,148 @@ fn on_opcode_ignores_all_16_named_arithmetic_comparison_opcodes() {
             "opcode {opcode:#x} should be on the default ignore list"
         );
     }
+}
+
+// Opcode byte literals used by the tests below, pinned against
+// `crate::opcodes::Opcode`/geth's `vm.OpCode` (see
+// `erc7562_tracer_opcode_byte_pins` above for the pattern this mirrors).
+const SLOAD: u8 = 0x54;
+const SSTORE: u8 = 0x55;
+const TLOAD: u8 = 0x5C;
+const TSTORE: u8 = 0x5D;
+
+/// Step 2's own test: the first `SLOAD` of a slot records its pre-existing
+/// value; a second `SLOAD` of the SAME slot must not overwrite it, mirroring
+/// geth's `handleStorageAccess`'s `!rOk && !wOk` first-touch guard.
+#[test]
+fn first_sload_records_original_value_second_does_not_overwrite() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    let slot = H256::from_low_u64_be(7);
+    tracer.on_storage_access(SLOAD, slot, Address::from_low_u64_be(1), || {
+        H256::from_low_u64_be(100)
+    });
+    tracer.on_storage_access(SLOAD, slot, Address::from_low_u64_be(1), || {
+        H256::from_low_u64_be(999) // should be ignored
+    });
+    tracer.exit(500, Vec::new(), None).unwrap();
+    let reads = &tracer.frames[0].root.accessed_slots.reads;
+    assert_eq!(reads.get(&slot), Some(&vec![H256::from_low_u64_be(100)]));
+}
+
+/// The first-touch guard checks BOTH `reads` and `writes`, not just `reads`:
+/// an `SSTORE` before any `SLOAD` must ALSO block the value-recording branch,
+/// so a slot written-then-read never gets a stale post-write value recorded
+/// as if it were the pre-existing one.
+#[test]
+fn sload_after_sstore_does_not_record_original_value() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    let slot = H256::from_low_u64_be(7);
+    let addr = Address::from_low_u64_be(1);
+    tracer.on_storage_access(SSTORE, slot, addr, || H256::zero());
+    tracer.on_storage_access(SLOAD, slot, addr, || H256::from_low_u64_be(999));
+    tracer.exit(500, Vec::new(), None).unwrap();
+    let accessed = &tracer.frames[0].root.accessed_slots;
+    assert!(
+        !accessed.reads.contains_key(&slot),
+        "the guard must check `writes` too, not just `reads`"
+    );
+    assert_eq!(accessed.writes.get(&slot), Some(&1));
+}
+
+/// `SSTORE` never stores a value -- only a write COUNTER that increments on
+/// every touch, unlike `SLOAD`'s "first touch only" value recording.
+#[test]
+fn sstore_increments_write_counter_every_touch() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    let slot = H256::from_low_u64_be(3);
+    let addr = Address::from_low_u64_be(1);
+    tracer.on_storage_access(SSTORE, slot, addr, || H256::zero());
+    tracer.on_storage_access(SSTORE, slot, addr, || H256::zero());
+    tracer.on_storage_access(SSTORE, slot, addr, || H256::zero());
+    tracer.exit(500, Vec::new(), None).unwrap();
+    let accessed = &tracer.frames[0].root.accessed_slots;
+    assert_eq!(accessed.writes.get(&slot), Some(&3));
+    assert!(accessed.reads.is_empty());
+}
+
+/// `TLOAD` has no "first touch" guard at all (unlike `SLOAD`): every touch
+/// increments `transient_reads`, and no value is ever recorded.
+#[test]
+fn tload_increments_transient_read_counter_every_touch_no_guard() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    let slot = H256::from_low_u64_be(9);
+    let addr = Address::from_low_u64_be(1);
+    tracer.on_storage_access(TLOAD, slot, addr, || H256::from_low_u64_be(111));
+    tracer.on_storage_access(TLOAD, slot, addr, || H256::from_low_u64_be(222));
+    tracer.exit(500, Vec::new(), None).unwrap();
+    let accessed = &tracer.frames[0].root.accessed_slots;
+    assert_eq!(accessed.transient_reads.get(&slot), Some(&2));
+    assert!(accessed.reads.is_empty(), "TLOAD must not touch `reads`");
+}
+
+/// `TSTORE` has no "first touch" guard either: every touch increments
+/// `transient_writes`.
+#[test]
+fn tstore_increments_transient_write_counter_every_touch_no_guard() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    let slot = H256::from_low_u64_be(11);
+    let addr = Address::from_low_u64_be(1);
+    tracer.on_storage_access(TSTORE, slot, addr, || H256::zero());
+    tracer.on_storage_access(TSTORE, slot, addr, || H256::zero());
+    tracer.on_storage_access(TSTORE, slot, addr, || H256::zero());
+    tracer.exit(500, Vec::new(), None).unwrap();
+    let accessed = &tracer.frames[0].root.accessed_slots;
+    assert_eq!(accessed.transient_writes.get(&slot), Some(&3));
+    assert!(
+        accessed.writes.is_empty(),
+        "TSTORE must not touch the persistent `writes` counter"
+    );
+}
+
+/// All four opcodes maintain independent counters/maps even when touching
+/// the identical slot number: persistent storage (`reads`/`writes`) and
+/// transient storage (`transient_reads`/`transient_writes`) never interfere.
+#[test]
+fn storage_and_transient_accesses_use_independent_counters() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    let slot = H256::from_low_u64_be(42);
+    let addr = Address::from_low_u64_be(1);
+    tracer.on_storage_access(SLOAD, slot, addr, || H256::from_low_u64_be(1));
+    tracer.on_storage_access(SSTORE, slot, addr, || H256::zero());
+    tracer.on_storage_access(TLOAD, slot, addr, || H256::zero());
+    tracer.on_storage_access(TSTORE, slot, addr, || H256::zero());
+    tracer.exit(500, Vec::new(), None).unwrap();
+    let accessed = &tracer.frames[0].root.accessed_slots;
+    assert_eq!(accessed.reads.get(&slot), Some(&vec![H256::from_low_u64_be(1)]));
+    assert_eq!(accessed.writes.get(&slot), Some(&1));
+    assert_eq!(accessed.transient_reads.get(&slot), Some(&1));
+    assert_eq!(accessed.transient_writes.get(&slot), Some(&1));
+}
+
+/// A disabled tracer's `on_storage_access` is a complete no-op, matching
+/// every other `active`-gated method on `Erc7562FrameTracer`.
+#[test]
+fn on_storage_access_is_a_noop_when_disabled() {
+    let mut tracer = Erc7562FrameTracer::disabled();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    let slot = H256::from_low_u64_be(1);
+    let addr = Address::from_low_u64_be(1);
+    tracer.on_storage_access(SLOAD, slot, addr, || H256::from_low_u64_be(1));
+    tracer.on_storage_access(SSTORE, slot, addr, || H256::zero());
+    tracer.on_storage_access(TLOAD, slot, addr, || H256::zero());
+    tracer.on_storage_access(TSTORE, slot, addr, || H256::zero());
+    assert!(tracer.frames.is_empty());
 }

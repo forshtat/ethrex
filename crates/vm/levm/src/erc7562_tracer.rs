@@ -44,6 +44,10 @@ const CALLCODE: u8 = 0xF2;
 const DELEGATECALL: u8 = 0xF4;
 const STATICCALL: u8 = 0xFA;
 const REVERT: u8 = 0xFD;
+const SLOAD: u8 = 0x54;
+const SSTORE: u8 = 0x55;
+const TLOAD: u8 = 0x5C;
+const TSTORE: u8 = 0x5D;
 
 /// Mirrors geth's `defaultIgnoredOpcodes()`: every `PUSHx`/`DUPx`/`SWAPx`
 /// (one contiguous byte range, `PUSH0..=SWAP16`) plus 16 named
@@ -345,5 +349,82 @@ impl Erc7562FrameTracer {
             return Ok(());
         }
         Ok(())
+    }
+
+    /// Records one `SLOAD`/`SSTORE`/`TLOAD`/`TSTORE` opcode's storage-slot
+    /// access against the currently-executing call frame's `accessed_slots`,
+    /// mirroring geth's `handleStorageAccess` (`eth/tracers/native/erc7562.go`,
+    /// lines 424-445) exactly:
+    ///
+    /// - `SLOAD`: records the value currently at `slot` -- via
+    ///   `original_value_fn`, ethrex's equivalent to geth's
+    ///   `t.env.StateDB.GetState(addr, slot)` -- into `reads[slot]`, but ONLY
+    ///   the first time `slot` is touched by a read OR a write in this frame.
+    ///   Geth's guard checks BOTH `Reads` and `Writes` before recording
+    ///   (`!rOk && !wOk`), not just `Reads`: a slot written then read must not
+    ///   get a stale post-write value recorded as if it were the pre-existing
+    ///   one. `original_value_fn` is a `FnOnce` precisely so the (potentially
+    ///   non-trivial) state read it performs is only ever done when the guard
+    ///   actually passes, matching geth's own conditional call to `GetState`.
+    /// - `SSTORE`: increments a write COUNTER (`writes[slot] += 1`) -- unlike
+    ///   `SLOAD`, no value is ever stored for a write.
+    /// - `TLOAD`/`TSTORE`: increment their own transient counters
+    ///   (`transient_reads[slot]` / `transient_writes[slot]`) unconditionally
+    ///   on every touch -- neither has a "first touch" guard, unlike `SLOAD`.
+    ///
+    /// Any opcode other than these four is a no-op (mirrors geth's `OnOpcode`
+    /// only ever calling `handleStorageAccess` for this exact set, reproduced
+    /// here as an explicit guard so a caller may dispatch unconditionally).
+    ///
+    /// `_addr` is accepted for calling-convention parity with geth's
+    /// `scope.Address()` (and so call sites building `original_value_fn`
+    /// closures have the address in scope) but is not itself read here:
+    /// `original_value_fn` already closes over whatever address/slot pair it
+    /// needs to look the value up against.
+    pub fn on_storage_access(
+        &mut self,
+        opcode: u8,
+        slot: H256,
+        _addr: Address,
+        original_value_fn: impl FnOnce() -> H256,
+    ) {
+        if !self.active {
+            return;
+        }
+        let Some(frame) = self.call_stack.last_mut() else {
+            return;
+        };
+        match opcode {
+            SLOAD => {
+                let already_touched = frame.accessed_slots.reads.contains_key(&slot)
+                    || frame.accessed_slots.writes.contains_key(&slot);
+                if !already_touched {
+                    frame
+                        .accessed_slots
+                        .reads
+                        .entry(slot)
+                        .or_default()
+                        .push(original_value_fn());
+                }
+            }
+            SSTORE => {
+                *frame.accessed_slots.writes.entry(slot).or_insert(0) += 1;
+            }
+            TLOAD => {
+                *frame
+                    .accessed_slots
+                    .transient_reads
+                    .entry(slot)
+                    .or_insert(0) += 1;
+            }
+            TSTORE => {
+                *frame
+                    .accessed_slots
+                    .transient_writes
+                    .entry(slot)
+                    .or_insert(0) += 1;
+            }
+            _ => {}
+        }
     }
 }
