@@ -15,6 +15,71 @@ use crate::errors::InternalError;
 use ethrex_common::{Address, H256, types::Log};
 use std::collections::HashMap;
 
+// Opcode bytes used by `on_opcode`'s ignore-list/CALL-family filters below,
+// pinned against `crate::opcodes::Opcode`'s discriminants (confirmed equal to
+// geth's own `vm.OpCode` values: EVM opcode bytes are standardized, and
+// PUSH0 -- the one relatively recent addition, EIP-3855 -- is 0x5F in both).
+const PUSH0: u8 = 0x5F;
+const SWAP16: u8 = 0x9F;
+const POP: u8 = 0x50;
+const ADD: u8 = 0x01;
+const MUL: u8 = 0x02;
+const SUB: u8 = 0x03;
+const DIV: u8 = 0x04;
+const LT: u8 = 0x10;
+const GT: u8 = 0x11;
+const SLT: u8 = 0x12;
+const SGT: u8 = 0x13;
+const EQ: u8 = 0x14;
+const ISZERO: u8 = 0x15;
+const AND: u8 = 0x16;
+const OR: u8 = 0x17;
+const NOT: u8 = 0x19;
+const SHL: u8 = 0x1B;
+const SHR: u8 = 0x1C;
+const GAS: u8 = 0x5A;
+const CALL: u8 = 0xF1;
+const CALLCODE: u8 = 0xF2;
+const DELEGATECALL: u8 = 0xF4;
+const STATICCALL: u8 = 0xFA;
+
+/// Mirrors geth's `defaultIgnoredOpcodes()`: every `PUSHx`/`DUPx`/`SWAPx`
+/// (one contiguous byte range, `PUSH0..=SWAP16`) plus 16 named
+/// arithmetic/comparison opcodes. Does NOT include `GAS` -- geth deliberately
+/// excludes `GAS` from this list since it is handled by a separate
+/// retroactive rule (see `on_opcode`'s doc comment).
+fn is_ignored_opcode(opcode: u8) -> bool {
+    matches!(opcode, PUSH0..=SWAP16)
+        || matches!(
+            opcode,
+            POP | ADD
+                | SUB
+                | MUL
+                | DIV
+                | EQ
+                | LT
+                | GT
+                | SLT
+                | SGT
+                | SHL
+                | SHR
+                | AND
+                | OR
+                | NOT
+                | ISZERO
+        )
+}
+
+/// Mirrors geth's `isCall()`: exactly `CALL`/`CALLCODE`/`DELEGATECALL`/
+/// `STATICCALL`. Deliberately does NOT include `CREATE`/`CREATE2` -- confirmed
+/// against `eth/tracers/native/erc7562.go`'s `isCall` function directly, and
+/// cross-checked against ethrex's own `check_validation_banned_opcode`
+/// (`vm.rs`), which reproduces the identical set for its sibling EIP-8141
+/// "sequential GAS rule" check.
+fn is_call_family(opcode: u8) -> bool {
+    matches!(opcode, CALL | CALLCODE | DELEGATECALL | STATICCALL)
+}
+
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct AccessedSlots {
     pub reads: HashMap<H256, Vec<H256>>,
@@ -182,6 +247,59 @@ impl Erc7562FrameTracer {
             });
         }
         Ok(())
+    }
+
+    /// Records one opcode's execution against the currently-executing call
+    /// frame's `used_opcodes` tally, mirroring geth's `storeUsedOpcode`/
+    /// `handleGasObserved` pair (`eth/tracers/native/erc7562.go`).
+    ///
+    /// Geth splits opcode counting in two:
+    ///
+    /// - `storeUsedOpcode` counts every opcode that is neither `GAS` nor on the
+    ///   `defaultIgnoredOpcodes()` list (all of `PUSH0..=SWAP16` — every
+    ///   `PUSHx`/`DUPx`/`SWAPx`, which share one contiguous, sequential byte
+    ///   range — plus `POP`, `ADD`, `SUB`, `MUL`, `DIV`, `EQ`, `LT`, `GT`,
+    ///   `SLT`, `SGT`, `SHL`, `SHR`, `AND`, `OR`, `NOT`, `ISZERO`).
+    /// - `handleGasObserved` counts `GAS` itself, but only *retroactively*: a
+    ///   `GAS` is only "suspicious" (worth counting) when it is NOT
+    ///   immediately followed by a CALL-family opcode, since `GAS` right
+    ///   before a call is the idiomatic "forward remaining gas to the callee"
+    ///   pattern. Geth's `isCall()` (same file) defines the CALL family as
+    ///   exactly `CALL`/`CALLCODE`/`DELEGATECALL`/`STATICCALL` — notably NOT
+    ///   `CREATE`/`CREATE2`. ethrex's own `check_validation_banned_opcode`
+    ///   (`vm.rs`) independently reproduces this identical `is_call_family`
+    ///   set for its sibling EIP-8141 "sequential GAS rule" check, confirming
+    ///   this is the right set to mirror here too.
+    ///
+    /// This method is called once per opcode, in dispatch order, so the
+    /// "was the previous opcode GAS" state needed for the retroactive rule is
+    /// tracked via `self.last_opcode` (set unconditionally at the end of every
+    /// call, mirroring geth's own `t.lastOpWithStack` bookkeeping).
+    pub fn on_opcode(&mut self, opcode: u8) {
+        if !self.active {
+            return;
+        }
+
+        // Retroactive GAS accounting: a GAS observed on the PREVIOUS call to
+        // `on_opcode` only counts as "used" once we know THIS opcode is not a
+        // CALL-family opcode. Evaluated before `last_opcode` is overwritten
+        // below.
+        if self.last_opcode == Some(GAS) && !is_call_family(opcode) {
+            if let Some(frame) = self.call_stack.last_mut() {
+                *frame.used_opcodes.entry(GAS).or_insert(0) += 1;
+            }
+        }
+
+        // Standard ignore-list filter. `GAS` is deliberately excluded from
+        // this path (it is never counted directly, only via the retroactive
+        // rule above), matching geth's `opcode != vm.GAS && !isIgnored`.
+        if opcode != GAS && !is_ignored_opcode(opcode) {
+            if let Some(frame) = self.call_stack.last_mut() {
+                *frame.used_opcodes.entry(opcode).or_insert(0) += 1;
+            }
+        }
+
+        self.last_opcode = Some(opcode);
     }
 
     /// Registers a log emitted during the currently-executing call frame.

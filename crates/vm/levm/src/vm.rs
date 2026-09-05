@@ -3957,6 +3957,17 @@ impl<'a> VM<'a> {
                 self.check_validation_banned_opcode(opcode);
             }
 
+            // ERC-7562/EIP-8141 validation-diagnostics opcode usage counting
+            // (debug_traceCall/debug_traceTransaction native tracer). Runtime-
+            // gated rather than folded into the `TRACED`/`VALIDATING` const
+            // generics above: `on_opcode` itself is also `active`-gated, so
+            // this outer check only saves the call overhead when inactive,
+            // mirroring the guard pattern already used at every other
+            // `erc7562_tracer` call site in this file.
+            if self.erc7562_tracer.active {
+                self.erc7562_tracer.on_opcode(opcode);
+            }
+
             // Struct-log pre-step capture (compiled out entirely when !TRACED).
             let gas_before_op = if TRACED {
                 self.trace_pre_step(opcode, pc_of_current_op)

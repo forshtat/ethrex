@@ -106,3 +106,128 @@ fn exit_with_lowercase_insufficient_gas_literal_sets_out_of_gas_flag() {
         .unwrap();
     assert!(tracer.frames[0].root.out_of_gas);
 }
+
+// --- `on_opcode` / used-opcode counting -------------------------------
+
+/// Mirrors geth's `defaultIgnoredOpcodes()`: SLOAD (not on the ignore list)
+/// is counted; ADD (one of the 16 named arithmetic/comparison opcodes on the
+/// list) is not.
+#[test]
+fn on_opcode_counts_non_ignored_opcodes() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.on_opcode(0x54); // SLOAD
+    tracer.on_opcode(0x54); // SLOAD again
+    tracer.on_opcode(0x01); // ADD -- ignored, per default filter
+    tracer.exit(500, Vec::new(), None).unwrap();
+    let used = &tracer.frames[0].root.used_opcodes;
+    assert_eq!(used.get(&0x54), Some(&2));
+    assert_eq!(used.get(&0x01), None);
+}
+
+/// The `PUSHx`/`DUPx`/`SWAPx` range (`PUSH0..=SWAP16`, 0x5F..=0x9F) is
+/// ignored at both its endpoints, not just somewhere in the middle.
+#[test]
+fn on_opcode_ignores_push_dup_swap_range_endpoints() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.on_opcode(0x5F); // PUSH0
+    tracer.on_opcode(0x9F); // SWAP16
+    tracer.exit(500, Vec::new(), None).unwrap();
+    let used = &tracer.frames[0].root.used_opcodes;
+    assert_eq!(used.get(&0x5F), None);
+    assert_eq!(used.get(&0x9F), None);
+}
+
+/// [OP-012] Retroactive GAS accounting, geth's `handleGasObserved`: a `GAS`
+/// immediately followed by a CALL-family opcode (`CALL`/`CALLCODE`/
+/// `DELEGATECALL`/`STATICCALL`) is the idiomatic "forward remaining gas to
+/// the callee" pattern and must NOT be counted.
+#[test]
+fn on_opcode_gas_followed_by_call_is_not_counted() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.on_opcode(0x5A); // GAS
+    tracer.on_opcode(0xF1); // CALL
+    tracer.exit(500, Vec::new(), None).unwrap();
+    let used = &tracer.frames[0].root.used_opcodes;
+    assert_eq!(used.get(&0x5A), None);
+}
+
+/// A `GAS` NOT immediately followed by a CALL-family opcode is a bare/
+/// standalone gas read and must be counted -- one opcode later than every
+/// other counted opcode, since the count only happens once the FOLLOWING
+/// opcode is observed.
+#[test]
+fn on_opcode_gas_followed_by_non_call_is_counted() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.on_opcode(0x5A); // GAS
+    tracer.on_opcode(0x01); // ADD -- not a call, so the preceding GAS counts
+    tracer.exit(500, Vec::new(), None).unwrap();
+    let used = &tracer.frames[0].root.used_opcodes;
+    assert_eq!(used.get(&0x5A), Some(&1));
+    // ADD itself is still ignored.
+    assert_eq!(used.get(&0x01), None);
+}
+
+/// All four CALL-family opcodes suppress the preceding GAS, not just `CALL`
+/// -- pins geth's exact `isCall()` set (`CALL`/`CALLCODE`/`DELEGATECALL`/
+/// `STATICCALL`), which notably excludes `CREATE`/`CREATE2`.
+#[test]
+fn on_opcode_gas_suppressed_before_every_call_family_opcode() {
+    for call_opcode in [0xF1u8, 0xF2, 0xF4, 0xFA] {
+        let mut tracer = Erc7562FrameTracer::new();
+        tracer.begin_frame(0);
+        tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+        tracer.on_opcode(0x5A); // GAS
+        tracer.on_opcode(call_opcode);
+        tracer.exit(500, Vec::new(), None).unwrap();
+        let used = &tracer.frames[0].root.used_opcodes;
+        assert_eq!(
+            used.get(&0x5A),
+            None,
+            "GAS before call-family opcode {call_opcode:#x} must not be counted"
+        );
+    }
+}
+
+/// `CREATE`/`CREATE2` are NOT part of geth's `isCall()` set, so a `GAS`
+/// immediately before either one is a standalone read (counted), not a
+/// gas-forwarding pattern.
+#[test]
+fn on_opcode_gas_before_create_is_counted() {
+    for create_opcode in [0xF0u8, 0xF5] {
+        let mut tracer = Erc7562FrameTracer::new();
+        tracer.begin_frame(0);
+        tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+        tracer.on_opcode(0x5A); // GAS
+        tracer.on_opcode(create_opcode); // CREATE / CREATE2
+        tracer.exit(500, Vec::new(), None).unwrap();
+        let used = &tracer.frames[0].root.used_opcodes;
+        assert_eq!(
+            used.get(&0x5A),
+            Some(&1),
+            "GAS before {create_opcode:#x} (not a call-family opcode) must be counted"
+        );
+    }
+}
+
+/// A `GAS` that is the LAST opcode of a frame (no following opcode observed)
+/// is never counted -- the retroactive rule only fires when a subsequent
+/// opcode confirms it wasn't a gas-forwarding call, and no such opcode ever
+/// arrives.
+#[test]
+fn on_opcode_trailing_gas_with_no_following_opcode_is_not_counted() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.on_opcode(0x5A); // GAS, then the frame ends
+    tracer.exit(500, Vec::new(), None).unwrap();
+    let used = &tracer.frames[0].root.used_opcodes;
+    assert_eq!(used.get(&0x5A), None);
+}
