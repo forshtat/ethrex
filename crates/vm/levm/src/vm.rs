@@ -5,6 +5,7 @@ use crate::{
     db::gen_db::GeneralizedDatabase,
     debug::DebugMode,
     environment::Environment,
+    erc7562_tracer::Erc7562FrameTracer,
     errors::{
         ContextResult, ExceptionalHalt, ExecutionReport, FrameResult, InternalError, OpcodeResult,
         TxResult, VMError,
@@ -634,6 +635,12 @@ pub struct VM<'a> {
     /// `if self.validation_observer.active`, so an inactive observer adds one
     /// branch to the dispatch loop and nothing more (mirrors `opcode_tracer`).
     pub validation_observer: ValidationObserver,
+    /// EIP-8141 native ERC-7562 frame-transaction diagnostics tracer, ported
+    /// from go-ethereum's `erc7562Tracer`. Disabled by default; RPC exposure
+    /// (which will actually activate it) is a later task's job. Read only
+    /// behind `if self.erc7562_tracer.active`, mirroring
+    /// `validation_observer`/`opcode_tracer`.
+    pub erc7562_tracer: Erc7562FrameTracer,
     /// Debug mode for development diagnostics.
     pub debug_mode: DebugMode,
     /// Pool of reusable stacks to reduce allocations.
@@ -1128,6 +1135,7 @@ impl<'a> VM<'a> {
             tracer,
             opcode_tracer: LevmOpcodeTracer::disabled(),
             validation_observer: ValidationObserver::disabled(),
+            erc7562_tracer: Erc7562FrameTracer::disabled(),
             debug_mode: DebugMode::disabled(),
             stack_pool: Vec::new(),
             vm_type,
@@ -2175,6 +2183,37 @@ impl<'a> VM<'a> {
                         InternalError::Custom("missing frame tx context".to_string()),
                     ))?;
                     ctx.current_frame_index = frame_idx;
+                    // ERC-7562/EIP-8141 frame tracer: this short-circuit runs
+                    // instead of the normal per-frame steps (see the comment at
+                    // the top of the loop), so it never reaches this task's other
+                    // `begin_frame` call site above. Open and immediately close a
+                    // synthetic call so this frame still gets exactly one
+                    // `FrameEntry`, matching a SKIPPED frame's `FrameResult`.
+                    // `frame.target`/`frame.execution_mode()` are read directly
+                    // off the frame-tx's declared frame, since the normal
+                    // caller/target resolution (further down the loop) never runs
+                    // for a skipped frame.
+                    if self.erc7562_tracer.active {
+                        let synthetic_from = if frame.execution_mode() == Some(FrameMode::Sender)
+                        {
+                            sender
+                        } else {
+                            entry_point
+                        };
+                        let synthetic_to = frame.target.unwrap_or(sender);
+                        self.erc7562_tracer.begin_frame(frame_idx);
+                        self.erc7562_tracer.enter(
+                            synthetic_from,
+                            synthetic_to,
+                            &frame.data,
+                            frame.gas_limit,
+                        );
+                        self.erc7562_tracer.exit(
+                            0,
+                            Vec::new(),
+                            Some("skipped: atomic batch reverted".to_string()),
+                        )?;
+                    }
                     ctx.frame_results.push(FrameResult {
                         status: ethrex_common::types::FRAME_RECEIPT_STATUS_SKIPPED,
                         gas_used: 0,
@@ -2243,16 +2282,41 @@ impl<'a> VM<'a> {
             ctx.current_frame_index = frame_idx;
             ctx.approve_called_in_current_frame = false;
 
+            // ERC-7562/EIP-8141 frame tracer: mark the start of this loop
+            // iteration's frame before dispatch decides which branch it takes
+            // (UTXO / default-code / normal CallFrame all reach this point; the
+            // atomic-batch-skip short-circuit above does not, so it opens its own
+            // `begin_frame` inline). See `Erc7562FrameTracer::begin_frame`'s doc
+            // comment for why this must be unconditional per-iteration rather than
+            // tied to CallFrame construction.
+            if self.erc7562_tracer.active {
+                self.erc7562_tracer.begin_frame(frame_idx);
+            }
+
             // EIP-8312: a UTXO frame executes no EVM code. Dispatch it natively
             // here, before any target or delegation resolution — the vault
             // carries real runtime code, so a target-based interception would
             // make semantics depend on code that must never run for a spend.
             if frame.execution_mode() == Some(FrameMode::Utxo) {
+                // ERC-7562/EIP-8141 frame tracer: a UTXO frame never builds a
+                // CallFrame (it dispatches natively below), so `enter`/`exit`
+                // bracket the native dispatch call directly instead of the usual
+                // CallFrame construction. There is no CALL-style caller for a
+                // vault spend, so `entry_point` stands in for `from` (matching the
+                // DEFAULT/VERIFY convention below) and `frame.target` for `to`.
+                if self.erc7562_tracer.active {
+                    let synthetic_to = frame.target.unwrap_or(sender);
+                    self.erc7562_tracer
+                        .enter(entry_point, synthetic_to, &frame.data, frame.gas_limit);
+                }
                 match crate::opcode_handlers::frame_tx::execute_utxo_frame(self, frame, frame_idx)?
                 {
                     Some((frame_gas, settlement)) => {
                         utxo_settlements.push(settlement);
                         total_gas_used = total_gas_used.saturating_add(frame_gas);
+                        if self.erc7562_tracer.active {
+                            self.erc7562_tracer.exit(frame_gas, Vec::new(), None)?;
+                        }
                         let ctx = self.frame_tx_context.as_mut().ok_or(VMError::Internal(
                             InternalError::Custom("missing frame tx context".to_string()),
                         ))?;
@@ -2267,6 +2331,13 @@ impl<'a> VM<'a> {
                         });
                     }
                     None => {
+                        if self.erc7562_tracer.active {
+                            self.erc7562_tracer.exit(
+                                0,
+                                Vec::new(),
+                                Some("EIP-8312 UTXO frame check failed".to_string()),
+                            )?;
+                        }
                         // Any failed check invalidates the transaction, as with a
                         // reverting VERIFY frame.
                         tx_invalid = Some("EIP-8312 UTXO frame check failed".to_string());
@@ -2307,6 +2378,21 @@ impl<'a> VM<'a> {
                     break;
                 }
             };
+
+            // ERC-7562/EIP-8141 frame tracer: `caller`/`target` are now resolved
+            // for every remaining branch this iteration can take (the
+            // entry-access-cost shortfall below, default-code execution, and
+            // normal CallFrame execution), so a single `enter` here covers all of
+            // them. Each of those branches sets `frame_failure` on any failure
+            // (or leaves it `None` on success), so a single matching `exit` right
+            // after the dispatch `if`/`else` (using `frame_failure`) closes
+            // whichever branch actually ran — except the entry-access-cost
+            // shortfall's early `continue`, which closes itself explicitly since
+            // it returns before reaching that point.
+            if self.erc7562_tracer.active {
+                self.erc7562_tracer
+                    .enter(caller, target, &frame.data, frame.gas_limit);
+            }
 
             // Set env.origin for this frame (ORIGIN opcode reads this)
             self.env.origin = caller;
@@ -2377,6 +2463,19 @@ impl<'a> VM<'a> {
                     // resolved or recorded for it: the delegation was only peeked at.
                     self.substate.revert_backup();
                     self.restore_cache_state()?;
+                    // ERC-7562/EIP-8141 frame tracer: this branch returns via
+                    // `continue` before reaching the single `exit` placed after
+                    // the dispatch `if`/`else` below, so it closes the `enter`
+                    // above itself.
+                    if self.erc7562_tracer.active {
+                        self.erc7562_tracer.exit(
+                            frame.gas_limit,
+                            Vec::new(),
+                            Some(
+                                "insufficient gas for frame entry access charge".to_string(),
+                            ),
+                        )?;
+                    }
                     let ctx = self.frame_tx_context.as_mut().ok_or(VMError::Internal(
                         InternalError::Custom("missing frame tx context".to_string()),
                     ))?;
@@ -2663,6 +2762,19 @@ impl<'a> VM<'a> {
 
                 result
             };
+
+            // ERC-7562/EIP-8141 frame tracer: closes the `enter` placed right
+            // after `caller`/`target` were resolved above. This single call
+            // covers every branch of the `if`/`else` this dispatch just ran
+            // (new-account-charge failure, value-transfer-reverted, default-code
+            // in all three of its outcomes, and normal CallFrame execution in all
+            // three of its outcomes) because each of those branches sets
+            // `frame_failure` on failure and leaves it `None` on success —
+            // exactly the signal `exit` needs, with no per-branch duplication.
+            if self.erc7562_tracer.active {
+                self.erc7562_tracer
+                    .exit(frame_gas_used, Vec::new(), frame_failure.clone())?;
+            }
 
             // EIP-8141 §Transaction settlement: "At frame exit,
             // `frame_receipt.gas_used.state` equals `frame.limits.state -
@@ -4551,6 +4663,7 @@ impl<'a> VM<'a> {
             crypto,
             stateless_validator: None,
             validation_observer: ValidationObserver::disabled(),
+            erc7562_tracer: Erc7562FrameTracer::disabled(),
             frame_tx_context: None,
         }
     }
