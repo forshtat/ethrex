@@ -154,6 +154,7 @@ pub struct FrameCallTraceFrame {
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct FrameEntry {
     /// Index into `FrameTransaction.frames`.
+    #[serde(rename = "frameIndex")]
     pub frame_index: usize,
     pub root: FrameCallTraceFrame,
 }

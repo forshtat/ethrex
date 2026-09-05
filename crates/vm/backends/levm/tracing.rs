@@ -10,6 +10,7 @@ use ethrex_crypto::Crypto;
 use ethrex_levm::StatelessValidator;
 use ethrex_levm::account::{AccountStatus, LevmAccount};
 use ethrex_levm::db::gen_db::CacheDB;
+use ethrex_levm::erc7562_tracer::{Erc7562FrameTracer, FrameEntry};
 use ethrex_levm::utils::get_base_fee_per_blob_gas;
 use ethrex_levm::vm::VMType;
 use ethrex_levm::{
@@ -215,6 +216,76 @@ impl LEVM {
         vm.opcode_tracer = LevmOpcodeTracer::new(cfg);
         vm.execute()?;
         Ok(vm.opcode_tracer.take_result())
+    }
+
+    /// Run transaction with the ERC-7562/EIP-8141 native frame tracer activated
+    /// (`Erc7562FrameTracer`). Only `Transaction::FrameTransaction`s actually populate
+    /// `frames` -- the tracer's `begin_frame`/`enter`/`exit` hooks are wired exclusively
+    /// into `VM::execute_frame_tx`, so tracing any other transaction type runs normally
+    /// and simply yields an empty `Vec` (see [`Self::trace_call_erc7562`]'s doc comment
+    /// for why `debug_traceCall` can never exercise the non-empty case today).
+    pub fn trace_tx_erc7562(
+        db: &mut GeneralizedDatabase,
+        block_header: &BlockHeader,
+        tx: &Transaction,
+        vm_type: VMType,
+        crypto: &dyn Crypto,
+    ) -> Result<Vec<FrameEntry>, EvmError> {
+        let env = Self::setup_env(
+            tx,
+            tx.sender(crypto).map_err(|error| {
+                EvmError::Transaction(format!("Couldn't recover addresses with error: {error}"))
+            })?,
+            block_header,
+            db,
+            vm_type,
+        )?;
+        Self::run_erc7562_trace(db, env, tx, vm_type, crypto)
+    }
+
+    /// `debug_traceCall` counterpart of [`Self::trace_tx_erc7562`].
+    ///
+    /// **Known limitation**: `GenericTransaction` (the `debug_traceCall` request shape)
+    /// has no way to express a frame transaction's `frames` list -- `generic_tx_to_transaction`
+    /// always converts it to an ordinary `EIP1559Transaction`/`EIP7702Transaction`, never
+    /// `Transaction::FrameTransaction`. Since `Erc7562FrameTracer`'s hooks only fire inside
+    /// `VM::execute_frame_tx`, this entry point's result is therefore always an empty `Vec`
+    /// until `GenericTransaction` gains frame-call support. It is still wired up (rather than
+    /// left unsupported) so `debug_traceCall` accepts `"tracer": "erc7562FrameTracer"`
+    /// requests the same way it accepts every other tracer, and so a future extension to
+    /// `GenericTransaction` needs no RPC-layer changes.
+    pub fn trace_call_erc7562(
+        db: &mut GeneralizedDatabase,
+        block_header: &BlockHeader,
+        tx: &GenericTransaction,
+        vm_type: VMType,
+        crypto: &dyn Crypto,
+    ) -> Result<Vec<FrameEntry>, EvmError> {
+        let (env, converted) = prepare_call_env(tx, block_header, db)?;
+        Self::run_erc7562_trace(db, env, &converted, vm_type, crypto)
+    }
+
+    /// Runs `tx` with the ERC-7562/EIP-8141 frame tracer over a prepared `env`. Shared by
+    /// the tx and call entry points.
+    fn run_erc7562_trace(
+        db: &mut GeneralizedDatabase,
+        env: Environment,
+        tx: &Transaction,
+        vm_type: VMType,
+        crypto: &dyn Crypto,
+    ) -> Result<Vec<FrameEntry>, EvmError> {
+        let mut vm = VM::new(
+            env,
+            db,
+            tx,
+            LevmCallTracer::disabled(),
+            vm_type,
+            crypto,
+            None,
+        )?;
+        vm.erc7562_tracer = Erc7562FrameTracer::new();
+        vm.execute()?;
+        Ok(vm.erc7562_tracer.frames)
     }
 
     /// Run transaction with callTracer activated. `log_index_base` is the number of logs

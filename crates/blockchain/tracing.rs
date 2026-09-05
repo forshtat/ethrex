@@ -6,7 +6,7 @@ use ethrex_common::{
     types::{Block, GenericTransaction},
 };
 use ethrex_storage::Store;
-use ethrex_vm::tracing::OpcodeTracerConfig;
+use ethrex_vm::tracing::{FrameEntry, OpcodeTracerConfig};
 use ethrex_vm::{Evm, EvmError};
 
 use crate::{Blockchain, error::ChainError, vm::StoreVmDatabase};
@@ -195,6 +195,30 @@ impl Blockchain {
         timeout_trace_operation(timeout, move || vm.trace_block_opcodes(&block, cfg)).await
     }
 
+    /// Outputs the ERC-7562/EIP-8141 native frame trace for the given transaction.
+    /// May need to re-execute blocks in order to rebuild the transaction's prestate, up to the amount given by `reexec`.
+    pub async fn trace_transaction_erc7562(
+        &self,
+        tx_hash: H256,
+        reexec: u32,
+        timeout: Duration,
+    ) -> Result<Vec<FrameEntry>, ChainError> {
+        let Some((_, block_hash, tx_index)) =
+            self.storage.get_transaction_location(tx_hash).await?
+        else {
+            return Err(ChainError::Custom("Transaction not Found".to_string()));
+        };
+        let tx_index = tx_index as usize;
+        let Some(block) = self.storage.get_block_by_hash(block_hash).await? else {
+            return Err(ChainError::Custom("Block not Found".to_string()));
+        };
+        let mut vm = self
+            .rebuild_parent_state(block.header.parent_hash, reexec)
+            .await?;
+        vm.rerun_block(&block, Some(tx_index))?;
+        timeout_trace_operation(timeout, move || vm.trace_tx_erc7562(&block, tx_index)).await
+    }
+
     /// Traces a synthetic `eth_call`-shaped request (`debug_traceCall`) with the callTracer.
     /// The call runs against `block`'s state: `None` uses the block's committed post-state
     /// (geth's "on top of the block" default), while `Some(i)` rebuilds the state up to (but
@@ -270,6 +294,25 @@ impl Blockchain {
             vm.trace_call_opcodes(&header, &transaction, cfg)
         })
         .await
+    }
+
+    /// Traces a synthetic `eth_call`-shaped request (`debug_traceCall`) with the
+    /// ERC-7562/EIP-8141 native frame tracer. See [`Self::trace_call_calls`] for the
+    /// `tx_index`/`reexec` state-rebuild semantics. See
+    /// [`ethrex_vm::Evm::trace_call_erc7562`] for why this always yields an empty result
+    /// today (`GenericTransaction` cannot express a frame transaction's `frames` list).
+    pub async fn trace_call_erc7562(
+        &self,
+        block: Block,
+        tx_index: Option<usize>,
+        transaction: GenericTransaction,
+        reexec: u32,
+        timeout: Duration,
+    ) -> Result<Vec<FrameEntry>, ChainError> {
+        let mut vm = self.build_call_trace_vm(&block, tx_index, reexec).await?;
+        let header = block.header;
+        timeout_trace_operation(timeout, move || vm.trace_call_erc7562(&header, &transaction))
+            .await
     }
 
     /// Builds the [`Evm`] a `debug_traceCall` runs against.

@@ -2,6 +2,7 @@ use crate::backends::levm::LEVM;
 use ethrex_common::H256;
 use ethrex_common::tracing::{CallTrace, OpcodeTraceResult, PrestateResult};
 use ethrex_common::types::{Block, BlockHeader, GenericTransaction};
+pub use ethrex_levm::erc7562_tracer::FrameEntry;
 pub use ethrex_levm::tracing::OpcodeTracerConfig;
 
 use crate::{Evm, EvmError};
@@ -92,6 +93,35 @@ impl Evm {
             self.vm_type,
             self.crypto.as_ref(),
         )
+    }
+
+    /// Executes a single tx and captures the ERC-7562/EIP-8141 native frame trace.
+    /// Assumes that the received state already contains changes from previous transactions.
+    pub fn trace_tx_erc7562(
+        &mut self,
+        block: &Block,
+        tx_index: usize,
+    ) -> Result<Vec<FrameEntry>, EvmError> {
+        let tx = block
+            .body
+            .transactions
+            .get(tx_index)
+            .ok_or(EvmError::Custom(
+                "Missing Transaction for Trace".to_string(),
+            ))?;
+
+        LEVM::trace_tx_erc7562(&mut self.db, &block.header, tx, self.vm_type, self.crypto.as_ref())
+    }
+
+    /// Traces a synthetic `eth_call`-shaped request with the ERC-7562/EIP-8141 native
+    /// frame tracer (`debug_traceCall`). See [`crate::backends::levm::LEVM::trace_call_erc7562`]
+    /// for why this always yields an empty result today.
+    pub fn trace_call_erc7562(
+        &mut self,
+        block_header: &BlockHeader,
+        tx: &GenericTransaction,
+    ) -> Result<Vec<FrameEntry>, EvmError> {
+        LEVM::trace_call_erc7562(&mut self.db, block_header, tx, self.vm_type, self.crypto.as_ref())
     }
 
     /// Traces a synthetic `eth_call`-shaped request with the callTracer (`debug_traceCall`).

@@ -106,6 +106,17 @@ enum TracerType {
     /// `structLogger` wrapper shape (`{failed, gas, returnValue, structLogs}`).
     /// Selected via `"tracer": "opcodeTracer"`.
     OpcodeTracer,
+    /// Native ERC-7562/EIP-8141 validation-diagnostics tracer
+    /// (`ethrex_levm::erc7562_tracer::Erc7562FrameTracer`), segmented by frame-transaction
+    /// frame index. Selected via `"tracer": "erc7562FrameTracer"`.
+    ///
+    /// **Deliberately not named `erc7562Tracer`** (geth's name for its own, differently
+    /// shaped, single-call-tree native tracer): this tracer's output is an array of
+    /// `{frameIndex, root}` entries, one per ERC-8141 frame-transaction frame, not a
+    /// single call tree. A client pointed at both geth and ethrex with the same tracer
+    /// name would silently get incompatibly-shaped JSON back; the distinct name forces
+    /// an explicit opt-in instead.
+    Erc7562FrameTracer,
 }
 
 #[derive(Deserialize, Default)]
@@ -255,6 +266,14 @@ impl RpcHandler for TraceTransactionRequest {
                     result: &result,
                     emit,
                 })?)
+            }
+            TracerType::Erc7562FrameTracer => {
+                let frames = context
+                    .blockchain
+                    .trace_transaction_erc7562(self.tx_hash, reexec, timeout)
+                    .await
+                    .map_err(|err| RpcErr::Internal(err.to_string()))?;
+                Ok(serde_json::to_value(frames)?)
             }
         }
     }
@@ -442,6 +461,18 @@ async fn trace_block(
                 .collect::<Result<_, serde_json::Error>>()?;
             Ok(serde_json::to_value(block_trace)?)
         }
+        TracerType::Erc7562FrameTracer => {
+            // Out of scope: this tracer's hooks only fire for a single
+            // `Transaction::FrameTransaction` executed via `debug_traceCall`/
+            // `debug_traceTransaction` (see `TracerType::Erc7562FrameTracer`'s doc
+            // comment). Whole-block tracing would need its own frame-index-across-
+            // transactions story that hasn't been designed, so it is rejected
+            // explicitly here rather than silently returning an empty/misleading
+            // per-tx array.
+            Err(RpcErr::BadParams(
+                "erc7562FrameTracer is not supported for debug_traceBlockByNumber/debug_traceBlockByHash; use debug_traceCall or debug_traceTransaction".to_string(),
+            ))
+        }
     }
 }
 
@@ -604,6 +635,19 @@ impl RpcHandler for TraceCallRequest {
                     result: &result,
                     emit,
                 })?)
+            }
+            TracerType::Erc7562FrameTracer => {
+                // `GenericTransaction` cannot express a frame transaction's `frames`
+                // list (see `TracerType::Erc7562FrameTracer`'s doc comment), so this
+                // always traces as an ordinary call and yields an empty array -- still
+                // accepted, rather than rejected, so `debug_traceCall` handles this
+                // tracer name the same way it handles every other one.
+                let frames = context
+                    .blockchain
+                    .trace_call_erc7562(block, tx_index, transaction.clone(), reexec, timeout)
+                    .await
+                    .map_err(|err| RpcErr::Internal(err.to_string()))?;
+                Ok(serde_json::to_value(frames)?)
             }
         }
     }
