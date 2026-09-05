@@ -146,6 +146,17 @@ impl Erc7562FrameTracer {
     /// `out_of_gas` on the popped frame — mirroring geth's `OnExit`
     /// (`errors.Is(err, vm.ErrOutOfGas) || errors.Is(err, vm.ErrCodeStoreOutOfGas)`
     /// -> `call.OutOfGas = true`).
+    ///
+    /// The match is a case-insensitive substring test on the already-formatted
+    /// error string, not a match on `ExceptionalHalt::OutOfGas` itself: by the
+    /// time an error reaches this method every `vm.rs` call site has already
+    /// reduced it to a `String` (`format!("{e}")` on a `VMError`, or a
+    /// hand-written literal for the synthetic UTXO/atomic-batch-skip paths that
+    /// have no underlying `VMError` at all), so there is no variant left to
+    /// match on without a wider refactor of every call site's error plumbing.
+    /// `ExceptionalHalt::OutOfGas`'s real `Display` impl renders as `"Out Of
+    /// Gas"` (title case) — lowercase both sides before comparing, or this
+    /// never fires for a real EVM out-of-gas halt.
     pub fn exit(
         &mut self,
         _gas_used: u64,
@@ -156,10 +167,11 @@ impl Erc7562FrameTracer {
             return Ok(());
         }
         let mut frame = self.call_stack.pop().ok_or(InternalError::CallFrame)?;
-        if let Some(err) = &error
-            && (err.contains("out of gas") || err.contains("insufficient gas"))
-        {
-            frame.out_of_gas = true;
+        if let Some(err) = &error {
+            let err_lower = err.to_lowercase();
+            if err_lower.contains("out of gas") || err_lower.contains("insufficient gas") {
+                frame.out_of_gas = true;
+            }
         }
         if let Some(parent) = self.call_stack.last_mut() {
             parent.calls.push(frame);

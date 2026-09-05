@@ -2389,6 +2389,25 @@ impl<'a> VM<'a> {
             // whichever branch actually ran — except the entry-access-cost
             // shortfall's early `continue`, which closes itself explicitly since
             // it returns before reaching that point.
+            //
+            // Known gap (not a bug today, but load-bearing for whoever consumes
+            // this trace next): several `?`-propagating calls between this
+            // `enter` and its matching `exit` below — `eip7702_peek_delegation`,
+            // `self.db.get_account_code(delegatee)`, `self.db.get_account(sender)`
+            // /`get_account(target)`, and `transfer(...)` inside
+            // `do_frame_value_transfer!()` — can return `Err` and unwind out of
+            // `execute_frame_tx` without ever reaching this frame's `exit`,
+            // leaving that one call open on `self.erc7562_tracer.call_stack`.
+            // This is unobservable *today* only because `execute_frame_tx` is a
+            // per-transaction `VM` and any such `Err` is a hard abort before any
+            // `ExecutionReport`/`FrameEntry` is ever read by anything in this
+            // repo. `LevmCallTracer`'s `enter`/`exit_context` never had to
+            // survive pre-CallFrame setup code like this, so this diff is the
+            // first place that assumption gets exercised — a future consumer
+            // that wants a partial trace even on a hard error (e.g. a
+            // "best-effort trace" debug RPC) would need to either close out
+            // `call_stack` on every such early return or reset the tracer
+            // between reused `VM` instances.
             if self.erc7562_tracer.active {
                 self.erc7562_tracer
                     .enter(caller, target, &frame.data, frame.gas_limit);
