@@ -490,3 +490,311 @@ fn on_storage_access_is_a_noop_when_disabled() {
     tracer.on_storage_access(TSTORE, slot, addr, || H256::zero());
     assert!(tracer.frames.is_empty());
 }
+
+// --- `on_ext_opcode` / EXTCODE access lookback ------------------------
+//
+// IMPORTANT: `on_ext_opcode` is NOT an immediate record. It mirrors geth's
+// `handleExtOpcodes`, which is itself a ONE-INSTRUCTION LOOKBACK over
+// `t.lastOpWithStack`: an EXTCODESIZE/EXTCODEHASH/EXTCODECOPY's target
+// address is only actually pushed into `ext_code_access_info` once the
+// FOLLOWING opcode is observed via `on_opcode` -- by which point the
+// decision of whether to suppress it (the EXTCODESIZE-then-ISZERO
+// "check code exists" idiom, ERC-7562's [OP-051] exemption) can be made.
+// These tests always call `on_ext_opcode` immediately followed by
+// `on_opcode(next)` to simulate the real dispatch sequence
+// (`vm.rs::run_dispatch` calls `on_opcode` for every instruction; the
+// EXT* opcode's own handler calls `on_ext_opcode` from within that same
+// instruction's `eval()`, timing-equivalent to geth's own pre-execution
+// capture), NOT a direct, standalone call taking an address argument with
+// no following opcode.
+
+const EXTCODESIZE: u8 = 0x3B;
+const EXTCODECOPY: u8 = 0x3C;
+const EXTCODEHASH: u8 = 0x3F;
+const ISZERO: u8 = 0x15;
+const ADD: u8 = 0x01;
+
+/// [OP-051] `EXTCODESIZE` immediately followed by `ISZERO` -- the standard
+/// "check code exists" idiom -- must NOT record the target address. This is
+/// the corrected version of the brief's own Step 1 sketch: rather than a
+/// direct `on_ext_opcode(0x3b, target)` call read back synchronously, the
+/// suppression only takes effect once the FOLLOWING opcode (`ISZERO`) is
+/// observed via `on_opcode`.
+#[test]
+fn extcodesize_immediately_followed_by_iszero_is_not_recorded() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    let target = Address::from_low_u64_be(42);
+    tracer.on_opcode(EXTCODESIZE); // dispatch loop's per-instruction hook
+    tracer.on_ext_opcode(EXTCODESIZE, target); // handler captures its own target
+    tracer.on_opcode(ISZERO); // lookback fires here: EXTCODESIZE + ISZERO -> suppressed
+    tracer.exit(500, Vec::new(), None).unwrap();
+    assert!(tracer.frames[0].root.ext_code_access_info.is_empty());
+}
+
+/// The exact same EXTCODESIZE capture, but followed by any OTHER opcode
+/// (not ISZERO), must record the address -- the suppression is narrowly
+/// scoped to the EXTCODESIZE-then-ISZERO pair specifically.
+#[test]
+fn extcodesize_followed_by_non_iszero_is_recorded() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    let target = Address::from_low_u64_be(42);
+    tracer.on_opcode(EXTCODESIZE);
+    tracer.on_ext_opcode(EXTCODESIZE, target);
+    tracer.on_opcode(ADD); // not ISZERO -- no suppression
+    tracer.exit(500, Vec::new(), None).unwrap();
+    assert_eq!(tracer.frames[0].root.ext_code_access_info, vec![target]);
+}
+
+/// `EXTCODEHASH` has no ISZERO-suppression idiom at all (only EXTCODESIZE
+/// does) -- it is recorded on the very next opcode observed, regardless of
+/// what that opcode is.
+#[test]
+fn extcodehash_is_recorded() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    let target = Address::from_low_u64_be(42);
+    tracer.on_opcode(EXTCODEHASH);
+    tracer.on_ext_opcode(EXTCODEHASH, target);
+    tracer.on_opcode(ISZERO); // even ISZERO -- suppression is EXTCODESIZE-specific
+    tracer.exit(500, Vec::new(), None).unwrap();
+    assert_eq!(tracer.frames[0].root.ext_code_access_info, vec![target]);
+}
+
+/// `EXTCODECOPY` behaves like `EXTCODEHASH`: no suppression idiom, recorded
+/// on the next opcode regardless.
+#[test]
+fn extcodecopy_is_recorded() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    let target = Address::from_low_u64_be(42);
+    tracer.on_opcode(EXTCODECOPY);
+    tracer.on_ext_opcode(EXTCODECOPY, target);
+    tracer.on_opcode(ADD);
+    tracer.exit(500, Vec::new(), None).unwrap();
+    assert_eq!(tracer.frames[0].root.ext_code_access_info, vec![target]);
+}
+
+/// An EXT* capture with NO following opcode observed before the frame ends
+/// is never recorded -- the lookback only fires once a subsequent
+/// `on_opcode` call examines it, and none ever arrives. Mirrors
+/// `on_opcode_trailing_gas_with_no_following_opcode_is_not_counted`'s
+/// identical structure for the GAS lookback.
+#[test]
+fn trailing_ext_opcode_with_no_following_opcode_is_not_recorded() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    let target = Address::from_low_u64_be(42);
+    tracer.on_opcode(EXTCODEHASH);
+    tracer.on_ext_opcode(EXTCODEHASH, target); // frame ends before any next on_opcode
+    tracer.exit(500, Vec::new(), None).unwrap();
+    assert!(tracer.frames[0].root.ext_code_access_info.is_empty());
+}
+
+/// A capture is consumed exactly once: a THIRD opcode after the
+/// EXTCODESIZE/ISZERO pair must not re-trigger (or re-suppress) anything,
+/// since `last_ext_access` is cleared (`take()`n) the moment it is examined.
+#[test]
+fn ext_access_capture_is_consumed_only_once() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    let first = Address::from_low_u64_be(1);
+    let second = Address::from_low_u64_be(2);
+    tracer.on_opcode(EXTCODEHASH);
+    tracer.on_ext_opcode(EXTCODEHASH, first);
+    tracer.on_opcode(ADD); // consumes `first`'s capture -> recorded
+    tracer.on_opcode(EXTCODESIZE);
+    tracer.on_ext_opcode(EXTCODESIZE, second);
+    tracer.on_opcode(ISZERO); // consumes `second`'s capture -> suppressed
+    tracer.on_opcode(ADD); // no pending capture left -- must be a no-op
+    tracer.exit(500, Vec::new(), None).unwrap();
+    assert_eq!(tracer.frames[0].root.ext_code_access_info, vec![first]);
+}
+
+/// A disabled tracer's `on_ext_opcode` is a complete no-op.
+#[test]
+fn on_ext_opcode_is_a_noop_when_disabled() {
+    let mut tracer = Erc7562FrameTracer::disabled();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.on_opcode(EXTCODESIZE);
+    tracer.on_ext_opcode(EXTCODESIZE, Address::from_low_u64_be(42));
+    tracer.on_opcode(ADD);
+    assert!(tracer.frames.is_empty());
+}
+
+// --- `on_contract_size_access` -----------------------------------------
+//
+// Unlike `on_ext_opcode` above, this one is an IMMEDIATE check against the
+// CURRENT opcode's own target address -- no lookback involved.
+
+const CALL: u8 = 0xF1;
+
+/// First access to an address records its code size and the triggering
+/// opcode.
+#[test]
+fn contract_size_recorded_on_first_access() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    let target = Address::from_low_u64_be(7);
+    tracer.on_contract_size_access(EXTCODESIZE, target, || 123);
+    tracer.exit(500, Vec::new(), None).unwrap();
+    let sizes = &tracer.frames[0].root.contract_size;
+    let entry = sizes.get(&target).expect("size must be recorded");
+    assert_eq!(entry.contract_size, 123);
+    assert_eq!(entry.opcode, EXTCODESIZE);
+}
+
+/// A SECOND access to the SAME address (even via a different opcode, and
+/// even with a different reported size) must not overwrite the first
+/// recording -- mirrors geth's "only record on first access" semantics.
+#[test]
+fn contract_size_second_access_does_not_overwrite() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    let target = Address::from_low_u64_be(7);
+    tracer.on_contract_size_access(EXTCODESIZE, target, || 123);
+    tracer.on_contract_size_access(CALL, target, || 999);
+    tracer.exit(500, Vec::new(), None).unwrap();
+    let sizes = &tracer.frames[0].root.contract_size;
+    let entry = sizes.get(&target).expect("size must be recorded");
+    assert_eq!(entry.contract_size, 123);
+    assert_eq!(entry.opcode, EXTCODESIZE);
+}
+
+/// The `code_len_fn` closure is only ever invoked on the first-access
+/// branch (mirrors `on_storage_access`'s identical `FnOnce`-laziness
+/// guarantee for `original_value_fn`): a second access's closure must never
+/// run, even if it would panic.
+#[test]
+fn contract_size_closure_not_invoked_on_repeat_access() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    let target = Address::from_low_u64_be(7);
+    tracer.on_contract_size_access(EXTCODESIZE, target, || 123);
+    tracer.on_contract_size_access(CALL, target, || panic!("must not be called"));
+    tracer.exit(500, Vec::new(), None).unwrap();
+    assert_eq!(
+        tracer.frames[0].root.contract_size.get(&target).unwrap().contract_size,
+        123
+    );
+}
+
+/// Different addresses get independent entries.
+#[test]
+fn contract_size_tracks_multiple_addresses_independently() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    let a = Address::from_low_u64_be(1);
+    let b = Address::from_low_u64_be(2);
+    tracer.on_contract_size_access(EXTCODESIZE, a, || 10);
+    tracer.on_contract_size_access(CALL, b, || 20);
+    tracer.exit(500, Vec::new(), None).unwrap();
+    let sizes = &tracer.frames[0].root.contract_size;
+    assert_eq!(sizes.get(&a).unwrap().contract_size, 10);
+    assert_eq!(sizes.get(&b).unwrap().contract_size, 20);
+}
+
+/// A disabled tracer's `on_contract_size_access` is a complete no-op.
+#[test]
+fn on_contract_size_access_is_a_noop_when_disabled() {
+    let mut tracer = Erc7562FrameTracer::disabled();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.on_contract_size_access(EXTCODESIZE, Address::from_low_u64_be(7), || {
+        panic!("must not be called when disabled")
+    });
+    assert!(tracer.frames.is_empty());
+}
+
+// --- `on_keccak` ---------------------------------------------------------
+//
+// Scoped to the WHOLE `Erc7562FrameTracer` (matching geth's
+// `t.keccakPreimages` living on `erc7562Tracer` itself), not per call frame
+// or per frame-transaction frame -- exposed via the `keccak_preimages()`
+// accessor rather than a per-`FrameEntry` field.
+
+/// A single `KECCAK256` call's preimage is recorded in the tracer-scoped set.
+#[test]
+fn keccak_preimage_is_recorded() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.on_keccak(b"hello".to_vec());
+    tracer.exit(500, Vec::new(), None).unwrap();
+    assert!(tracer.keccak_preimages().contains(&b"hello".to_vec()));
+}
+
+/// No length filtering of any kind -- an empty preimage is still recorded
+/// (mirrors geth's `storeKeccak`, which never filters by length).
+#[test]
+fn keccak_empty_preimage_is_recorded() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.on_keccak(Vec::new());
+    tracer.exit(500, Vec::new(), None).unwrap();
+    assert!(tracer.keccak_preimages().contains(&Vec::<u8>::new()));
+}
+
+/// Preimages computed across DIFFERENT call frames of the SAME frame
+/// transaction all land in the one shared, tracer-scoped set -- matching
+/// geth's design intent that `keccak(A||x)+n` pattern-matching must work
+/// regardless of which frame computed the hash.
+#[test]
+fn keccak_preimages_are_shared_across_call_frames() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.on_keccak(b"outer".to_vec());
+    tracer.enter(
+        Address::from_low_u64_be(1),
+        Address::from_low_u64_be(2),
+        &[],
+        400,
+    );
+    tracer.on_keccak(b"inner".to_vec());
+    tracer.exit(200, Vec::new(), None).unwrap();
+    tracer.exit(500, Vec::new(), None).unwrap();
+    let preimages = tracer.keccak_preimages();
+    assert!(preimages.contains(&b"outer".to_vec()));
+    assert!(preimages.contains(&b"inner".to_vec()));
+}
+
+/// Preimages persist across separate frame-transaction frames too (not just
+/// nested call frames within one), consistent with the field being scoped
+/// to the whole `Erc7562FrameTracer`, not reset by `begin_frame`.
+#[test]
+fn keccak_preimages_persist_across_frame_transaction_frames() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.on_keccak(b"frame-zero".to_vec());
+    tracer.exit(500, Vec::new(), None).unwrap();
+    tracer.begin_frame(1);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(2), &[], 1000);
+    tracer.on_keccak(b"frame-one".to_vec());
+    tracer.exit(500, Vec::new(), None).unwrap();
+    let preimages = tracer.keccak_preimages();
+    assert!(preimages.contains(&b"frame-zero".to_vec()));
+    assert!(preimages.contains(&b"frame-one".to_vec()));
+}
+
+/// A disabled tracer's `on_keccak` is a complete no-op.
+#[test]
+fn on_keccak_is_a_noop_when_disabled() {
+    let mut tracer = Erc7562FrameTracer::disabled();
+    tracer.on_keccak(b"hello".to_vec());
+    assert!(tracer.keccak_preimages().is_empty());
+}

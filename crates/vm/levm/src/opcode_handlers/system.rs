@@ -18,6 +18,7 @@ use crate::{
     gas_cost,
     memory::{self, calculate_memory_size},
     opcode_handlers::OpcodeHandler,
+    opcodes::Opcode,
     precompiles,
     utils::{address_to_word, create_eth_transfer_log, word_to_address, *},
     vm::VM,
@@ -76,6 +77,21 @@ impl OpcodeHandler for OpCallHandler {
         // not leak the delegate read into execution witnesses (EIP-8025).
         let (callee_code, delegation) =
             eip7702_peek_delegation(vm.db, &vm.substate, callee, vm.env.config.fork)?;
+
+        // ERC-7562/EIP-8141 validation-diagnostics: record the contract size
+        // at first access to `callee`, mirroring geth's
+        // `handleAccessedContractSize` for the CALL-family case (stack
+        // position 1, i.e. the target address rather than `gas`, the
+        // opcode's own stack-top -- already resolved above as `callee` by
+        // ordinary destructuring, matching the address geth's `GetCode`
+        // reads: the raw code stored at `callee` itself, BEFORE any EIP-7702
+        // delegation resolution -- reusing `callee_code`, already fetched
+        // above for the opcode's own execution).
+        if vm.erc7562_tracer.active {
+            let code_len = callee_code.code().len();
+            vm.erc7562_tracer
+                .on_contract_size_access(Opcode::CALL as u8, callee, || code_len);
+        }
         let is_delegation_7702 = delegation.is_some();
         let (eip7702_gas_consumed, code_address) = match delegation {
             Some((auth_address, access_cost)) => (access_cost, auth_address),
@@ -257,6 +273,15 @@ impl OpcodeHandler for OpCallCodeHandler {
         // not leak the delegate read into execution witnesses (EIP-8025).
         let (target_code, delegation) =
             eip7702_peek_delegation(vm.db, &vm.substate, address, vm.env.config.fork)?;
+
+        // ERC-7562/EIP-8141 validation-diagnostics: record the contract size
+        // at first access to `address` (see the CALL handler's identical
+        // comment above for the full rationale).
+        if vm.erc7562_tracer.active {
+            let code_len = target_code.code().len();
+            vm.erc7562_tracer
+                .on_contract_size_access(Opcode::CALLCODE as u8, address, || code_len);
+        }
         let is_delegation_7702 = delegation.is_some();
         let (eip7702_gas_consumed, code_address) = match delegation {
             Some((auth_address, access_cost)) => (access_cost, auth_address),
@@ -381,6 +406,15 @@ impl OpcodeHandler for OpDelegateCallHandler {
         // not leak the delegate read into execution witnesses (EIP-8025).
         let (target_code, delegation) =
             eip7702_peek_delegation(vm.db, &vm.substate, address, vm.env.config.fork)?;
+
+        // ERC-7562/EIP-8141 validation-diagnostics: record the contract size
+        // at first access to `address` (see the CALL handler's identical
+        // comment above for the full rationale).
+        if vm.erc7562_tracer.active {
+            let code_len = target_code.code().len();
+            vm.erc7562_tracer
+                .on_contract_size_access(Opcode::DELEGATECALL as u8, address, || code_len);
+        }
         let is_delegation_7702 = delegation.is_some();
         let (eip7702_gas_consumed, code_address) = match delegation {
             Some((auth_address, access_cost)) => (access_cost, auth_address),
@@ -505,6 +539,15 @@ impl OpcodeHandler for OpStaticCallHandler {
         // not leak the delegate read into execution witnesses (EIP-8025).
         let (target_code, delegation) =
             eip7702_peek_delegation(vm.db, &vm.substate, address, vm.env.config.fork)?;
+
+        // ERC-7562/EIP-8141 validation-diagnostics: record the contract size
+        // at first access to `address` (see the CALL handler's identical
+        // comment above for the full rationale).
+        if vm.erc7562_tracer.active {
+            let code_len = target_code.code().len();
+            vm.erc7562_tracer
+                .on_contract_size_access(Opcode::STATICCALL as u8, address, || code_len);
+        }
         let is_delegation_7702 = delegation.is_some();
         let (eip7702_gas_consumed, code_address) = match delegation {
             Some((auth_address, access_cost)) => (access_cost, auth_address),

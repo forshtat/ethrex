@@ -48,6 +48,12 @@ const SLOAD: u8 = 0x54;
 const SSTORE: u8 = 0x55;
 const TLOAD: u8 = 0x5C;
 const TSTORE: u8 = 0x5D;
+// EXTCODECOPY (0x3C) and EXTCODEHASH (0x3F) opcode bytes are not pinned as
+// consts here: unlike EXTCODESIZE, neither is compared against directly in
+// this file (the suppression rule below only ever checks for EXTCODESIZE
+// specifically) -- callers pass their own opcode byte, from
+// `crate::opcodes::Opcode`, into `on_ext_opcode`/`on_contract_size_access`.
+const EXTCODESIZE: u8 = 0x3B;
 
 /// Mirrors geth's `defaultIgnoredOpcodes()`: every `PUSHx`/`DUPx`/`SWAPx`
 /// (one contiguous byte range, `PUSH0..=SWAP16`) plus 16 named
@@ -171,6 +177,14 @@ pub struct Erc7562FrameTracer {
     current_frame_index: usize,
     keccak_preimages: std::collections::HashSet<Vec<u8>>,
     last_opcode: Option<u8>,
+    /// Captures the `(opcode, target_address)` of the most recently executed
+    /// `EXTCODESIZE`/`EXTCODEHASH`/`EXTCODECOPY`, to be examined by the NEXT
+    /// call to `on_opcode` and then consumed (cleared). Mirrors geth's
+    /// `t.lastOpWithStack` -- but narrowed to only the EXT-opcode case, since
+    /// `last_opcode` above already independently tracks the GAS-lookback
+    /// case. See `on_ext_opcode`'s doc comment for why this must be a
+    /// one-instruction lookback rather than an immediate record.
+    last_ext_access: Option<(u8, Address)>,
 }
 
 impl Erc7562FrameTracer {
@@ -314,6 +328,25 @@ impl Erc7562FrameTracer {
             return;
         }
 
+        // EXTCODE access lookback: an EXTCODESIZE/EXTCODEHASH/EXTCODECOPY
+        // captured by `on_ext_opcode` one instruction ago (called from within
+        // that opcode's own handler, which runs AFTER this method was called
+        // for that earlier instruction) is now examined against the CURRENT
+        // opcode, mirroring geth's `handleExtOpcodes`: suppressed only when
+        // the captured opcode was specifically `EXTCODESIZE` and the CURRENT
+        // opcode is `ISZERO` (the "check code exists" idiom ERC-7562's
+        // [OP-051] exempts); every other combination records the captured
+        // address. Consumed via `take()` regardless of outcome, so a second,
+        // non-adjacent opcode never re-examines the same capture.
+        if let Some((last_ext_opcode, addr)) = self.last_ext_access.take() {
+            let suppressed = last_ext_opcode == EXTCODESIZE && opcode == ISZERO;
+            if !suppressed {
+                if let Some(frame) = self.call_stack.last_mut() {
+                    frame.ext_code_access_info.push(addr);
+                }
+            }
+        }
+
         // Retroactive GAS accounting: a GAS observed on the PREVIOUS call to
         // `on_opcode` only counts as "used" once we know THIS opcode is
         // neither a CALL-family opcode nor RETURN/REVERT. Evaluated before
@@ -426,5 +459,129 @@ impl Erc7562FrameTracer {
             }
             _ => {}
         }
+    }
+
+    /// Captures an `EXTCODESIZE`/`EXTCODEHASH`/`EXTCODECOPY` opcode's target
+    /// address, to be examined by the NEXT call to `on_opcode` -- mirrors
+    /// geth's `handleExtOpcodes`, which is itself a ONE-INSTRUCTION LOOKBACK
+    /// over `t.lastOpWithStack`, not an immediate record.
+    ///
+    /// # Why a lookback, not an immediate record
+    ///
+    /// geth's `OnOpcode` fires once per instruction, PRE-execution, with the
+    /// stack still holding that instruction's own operands. It captures the
+    /// current instruction's opcode + stack-top items into
+    /// `t.lastOpWithStack` at the END of every `OnOpcode` call, then examines
+    /// that SAME captured record one instruction later, when the NEXT
+    /// `OnOpcode` call fires -- by which point the EXT* opcode has already
+    /// executed and overwritten its own stack-top operand with its own
+    /// result (a size, a hash, ...), so the target address is no longer
+    /// readable from the CURRENT stack at that point. It has to have been
+    /// captured one instruction earlier, while the EXT* opcode's own operand
+    /// was still on top.
+    ///
+    /// ethrex's dispatch loop (`vm.rs::run_dispatch`) calls
+    /// `self.on_opcode(opcode)` BEFORE that opcode's handler runs, and the
+    /// handler itself calls THIS method (after already popping the target
+    /// address off the stack for its own use) -- so by the time `on_opcode`
+    /// is called for the NEXT instruction, `self.last_ext_access` has
+    /// already been populated by the PREVIOUS instruction's handler,
+    /// timing-equivalent to geth's own capture point relative to its own
+    /// lookback check.
+    ///
+    /// Only ever called by the `EXTCODESIZE`/`EXTCODEHASH`/`EXTCODECOPY`
+    /// handlers (`opcode_handlers/environment.rs`) -- CALL-family opcodes do
+    /// NOT feed this method: `handleExtOpcodes` in geth only ever examines
+    /// `isEXT()`, never `isCall()`. The CALL-family's own contract-size
+    /// bookkeeping is a separate, IMMEDIATE check -- see
+    /// `on_contract_size_access` below.
+    pub fn on_ext_opcode(&mut self, opcode: u8, addr: Address) {
+        if !self.active {
+            return;
+        }
+        self.last_ext_access = Some((opcode, addr));
+    }
+
+    /// Records the code size at `addr` the first time it is touched by an
+    /// `EXTCODEHASH`/`EXTCODESIZE`/`EXTCODECOPY` or `CALL`/`CALLCODE`/
+    /// `DELEGATECALL`/`STATICCALL` opcode, mirroring geth's
+    /// `handleAccessedContractSize` -- with one key difference from
+    /// `on_ext_opcode` above: this one is evaluated IMMEDIATELY against the
+    /// CURRENT opcode's own (not-yet-consumed) target address, no lookback.
+    ///
+    /// geth peeks the target address directly off the raw EVM stack: stack
+    /// position 0 for EXT* opcodes (their sole/first argument IS the target
+    /// address) but position 1 for CALL-family opcodes (whose own stack-top
+    /// is the `gas` argument, with the target address one slot below it --
+    /// `isEXT(opcode) ? 0 : 1`). ethrex's call sites, unlike geth's
+    /// externally-bolted-on tracer, already pop and destructure their full
+    /// argument tuple before calling this method (e.g. `OpCallHandler`'s own
+    /// `let [gas, callee, value, ...] = *stack.pop()?` already resolved
+    /// `callee` from the correct depth as an ordinary part of executing the
+    /// opcode), so this method takes the already-resolved `addr` directly
+    /// rather than re-deriving a stack position itself -- the n=0-vs-n=1
+    /// distinction is satisfied by construction at each call site (each
+    /// handler passes its OWN opcode's target-address variable), not by any
+    /// stack-index logic living here.
+    ///
+    /// `code_len_fn` mirrors `on_storage_access`'s `original_value_fn`
+    /// pattern: an `FnOnce` so the code-length lookup only happens on the
+    /// guarded first-touch branch (`HashMap::entry().or_insert_with()`),
+    /// matching geth's own conditional call to `StateDB.GetCode`. Every call
+    /// site passes a value it already computed for the opcode's own
+    /// execution (`account_code_length` for `EXTCODESIZE`, the fetched
+    /// `Code`'s length for `EXTCODECOPY`/CALL-family, or the equivalent
+    /// still-needed lookup for `EXTCODEHASH`, which computes no length of
+    /// its own), so this is zero-cost on the common repeat-access path and
+    /// at most one extra lookup on first access.
+    pub fn on_contract_size_access(
+        &mut self,
+        opcode: u8,
+        addr: Address,
+        code_len_fn: impl FnOnce() -> usize,
+    ) {
+        if !self.active {
+            return;
+        }
+        let Some(frame) = self.call_stack.last_mut() else {
+            return;
+        };
+        frame
+            .contract_size
+            .entry(addr)
+            .or_insert_with(|| ContractSizeWithOpcode {
+                contract_size: code_len_fn(),
+                opcode,
+            });
+    }
+
+    /// Records a `KECCAK256` call's preimage bytes, mirroring geth's
+    /// `storeKeccak` exactly: unconditional (no length filtering of any
+    /// kind -- every `KECCAK256` call's preimage is stored regardless of
+    /// size) and scoped to the WHOLE tracer (`self.keccak_preimages`), NOT
+    /// to the currently-executing call frame, matching geth's
+    /// `t.keccakPreimages` living on `erc7562Tracer` itself rather than on
+    /// `callFrameWithOpcodes`. Task 2's scaffold already declared
+    /// `keccak_preimages` as this top-level field, resolving in advance the
+    /// scoping question the original task brief raised: preimages are
+    /// shared across every frame of one frame transaction (not reset per
+    /// call frame), so the `keccak(A||x)+n` associated-storage
+    /// pattern-match a downstream consumer performs works regardless of
+    /// which frame actually computed the hash.
+    pub fn on_keccak(&mut self, preimage: Vec<u8>) {
+        if !self.active {
+            return;
+        }
+        self.keccak_preimages.insert(preimage);
+    }
+
+    /// Read-only accessor for the tracer-scoped `keccak_preimages` set.
+    /// Needed because the field itself is private, matching the convention
+    /// used throughout this struct (`call_stack`, `current_frame_index`,
+    /// `last_opcode`, `last_ext_access` are all private bookkeeping); callers
+    /// outside this module (including tests) reach it only through this
+    /// accessor.
+    pub fn keccak_preimages(&self) -> &std::collections::HashSet<Vec<u8>> {
+        &self.keccak_preimages
     }
 }

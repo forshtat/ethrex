@@ -37,6 +37,22 @@ impl OpcodeHandler for OpKeccak256Handler {
                 len,
             )?)?;
 
+        // ERC-7562/EIP-8141 validation-diagnostics: record this call's raw
+        // preimage bytes, mirroring geth's `storeKeccak` -- unconditional,
+        // no length filtering. `with_range` already zero-pads reads past the
+        // current memory length (matching geth's `GetMemoryCopyPadded`), so
+        // no separate padding logic is needed here. A second, independent
+        // `with_range` call (rather than reusing the hashing one below) keeps
+        // this hook trivially separable from the hash computation and its
+        // own borrow of `vm.crypto`.
+        if vm.erc7562_tracer.active {
+            let preimage = vm
+                .current_call_frame
+                .memory
+                .with_range(offset, len, <[u8]>::to_vec)?;
+            vm.erc7562_tracer.on_keccak(preimage);
+        }
+
         // Hash the memory range in place — `with_range` lends a borrow to keccak256
         // instead of allocating a throwaway `Bytes` copy (KECCAK256 fires ~15x/tx).
         // Bind `crypto` first so the closure doesn't capture `vm` while `memory` is

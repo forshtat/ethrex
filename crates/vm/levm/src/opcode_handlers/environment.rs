@@ -23,6 +23,7 @@ use crate::{
     gas_cost::{self},
     memory::calculate_memory_size,
     opcode_handlers::OpcodeHandler,
+    opcodes::Opcode,
     utils::{size_offset_to_usize, u256_to_usize, word_to_address},
     vm::VM,
 };
@@ -303,14 +304,30 @@ impl OpcodeHandler for OpExtCodeSizeHandler {
         }
 
         // State access AFTER gas check passes (using optimized code length lookup)
-        let account_code_length = vm.db.get_code_length(address)?.into();
+        let account_code_length: usize = vm.db.get_code_length(address)?;
+
+        // ERC-7562/EIP-8141 validation-diagnostics: capture the EXTCODESIZE
+        // target for the one-instruction EXTCODE-access lookback (see
+        // `on_ext_opcode`'s doc comment), and record the contract size at
+        // first access -- reusing `account_code_length`, already computed
+        // above for the opcode's own result, so this is a zero-cost reuse
+        // rather than a second lookup.
+        if vm.erc7562_tracer.active {
+            vm.erc7562_tracer
+                .on_ext_opcode(Opcode::EXTCODESIZE as u8, address);
+            vm.erc7562_tracer.on_contract_size_access(
+                Opcode::EXTCODESIZE as u8,
+                address,
+                || account_code_length,
+            );
+        }
 
         // Record address touch for BAL (after gas check passes)
         if let Some(recorder) = vm.db.bal_recorder.as_mut() {
             recorder.record_touched_address(address);
         }
 
-        vm.current_call_frame.stack.push(account_code_length)?;
+        vm.current_call_frame.stack.push(account_code_length.into())?;
 
         Ok(OpcodeResult::Continue)
     }
@@ -325,6 +342,14 @@ impl OpcodeHandler for OpExtCodeCopyHandler {
         let address = word_to_address(address);
         let (len, dst_offset) = size_offset_to_usize(len, dst_offset)?;
         let src_offset = u256_to_usize(src_offset).unwrap_or(usize::MAX);
+
+        // ERC-7562/EIP-8141 validation-diagnostics: capture the EXTCODECOPY
+        // target for the one-instruction EXTCODE-access lookback (see
+        // `on_ext_opcode`'s doc comment).
+        if vm.erc7562_tracer.active {
+            vm.erc7562_tracer
+                .on_ext_opcode(Opcode::EXTCODECOPY as u8, address);
+        }
 
         vm.current_call_frame
             .increase_consumed_gas(gas_cost::extcodecopy(
@@ -350,6 +375,17 @@ impl OpcodeHandler for OpExtCodeCopyHandler {
         // fetch the code — not just the account — to keep the read observable
         // for execution witnesses (EIP-8025) and parallel-BAL access tracking.
         let code = vm.db.get_account_code(address)?;
+
+        // ERC-7562/EIP-8141 validation-diagnostics: record the contract size
+        // at first access, reusing the code just fetched above.
+        if vm.erc7562_tracer.active {
+            let code_len = code.code().len();
+            vm.erc7562_tracer.on_contract_size_access(
+                Opcode::EXTCODECOPY as u8,
+                address,
+                || code_len,
+            );
+        }
 
         if len > 0 {
             let data = code.dispatch_buf().get(src_offset..).unwrap_or_default();
@@ -377,6 +413,15 @@ impl OpcodeHandler for OpExtCodeHashHandler {
     #[inline(always)]
     fn eval(vm: &mut VM<'_>) -> Result<OpcodeResult, VMError> {
         let address = word_to_address(vm.current_call_frame.stack.pop1()?);
+
+        // ERC-7562/EIP-8141 validation-diagnostics: capture the EXTCODEHASH
+        // target for the one-instruction EXTCODE-access lookback (see
+        // `on_ext_opcode`'s doc comment).
+        if vm.erc7562_tracer.active {
+            vm.erc7562_tracer
+                .on_ext_opcode(Opcode::EXTCODEHASH as u8, address);
+        }
+
         vm.current_call_frame
             .increase_consumed_gas(gas_cost::extcodehash(
                 vm.substate.add_accessed_address(address),
@@ -392,6 +437,22 @@ impl OpcodeHandler for OpExtCodeHashHandler {
         let account = vm.db.get_account(address)?;
         let account_is_empty = account.is_empty();
         let account_code_hash = account.info.code_hash.0;
+
+        // ERC-7562/EIP-8141 validation-diagnostics: record the contract size
+        // at first access. Unlike EXTCODESIZE/EXTCODECOPY, this opcode
+        // computes no code length of its own, so the lookup is done here
+        // specifically for the tracer -- eagerly rather than lazily inside
+        // `code_len_fn`, since `get_code_length` is fallible and this
+        // method's closure signature is not; the extra lookup on a REPEAT
+        // access is a minor, trace-mode-only cost.
+        if vm.erc7562_tracer.active {
+            let code_len = vm.db.get_code_length(address)?;
+            vm.erc7562_tracer.on_contract_size_access(
+                Opcode::EXTCODEHASH as u8,
+                address,
+                || code_len,
+            );
+        }
 
         // Record address touch for BAL (after gas check passes)
         if let Some(recorder) = vm.db.bal_recorder.as_mut() {
