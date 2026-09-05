@@ -231,3 +231,118 @@ fn on_opcode_trailing_gas_with_no_following_opcode_is_not_counted() {
     let used = &tracer.frames[0].root.used_opcodes;
     assert_eq!(used.get(&0x5A), None);
 }
+
+/// [OP-012, fix round] Real geth divergence found in review: `RETURN`/
+/// `REVERT` ALSO suppress the retroactive `GAS` count, via a code path
+/// separate from `isCall()` -- geth's `OnOpcode` runs `handleReturnRevert`
+/// (which nils `t.lastOpWithStack` whenever the CURRENT opcode is `RETURN`/
+/// `REVERT`) BEFORE the `if t.lastOpWithStack != nil { handleGasObserved(...) }`
+/// guard, so a `GAS` immediately preceding either opcode is never counted --
+/// the same net effect as preceding a call-family opcode, just reached
+/// differently. `is_call_family` alone does not cover this since `RETURN`/
+/// `REVERT` are not part of `isCall()`.
+#[test]
+fn on_opcode_gas_followed_by_return_is_not_counted() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.on_opcode(0x5A); // GAS
+    tracer.on_opcode(0xF3); // RETURN
+    tracer.exit(500, Vec::new(), None).unwrap();
+    let used = &tracer.frames[0].root.used_opcodes;
+    assert_eq!(used.get(&0x5A), None);
+}
+
+/// Same as above, for `REVERT` (0xFD) rather than `RETURN`.
+#[test]
+fn on_opcode_gas_followed_by_revert_is_not_counted() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.on_opcode(0x5A); // GAS
+    tracer.on_opcode(0xFD); // REVERT
+    tracer.exit(500, Vec::new(), None).unwrap();
+    let used = &tracer.frames[0].root.used_opcodes;
+    assert_eq!(used.get(&0x5A), None);
+}
+
+/// Pins every opcode byte literal hardcoded in `erc7562_tracer.rs`'s
+/// `is_ignored_opcode`/`is_call_family`/`suppresses_gas_lookback` filters
+/// against the canonical `Opcode` enum discriminant, mirroring the existing
+/// `validation_observer_opcode_byte_pins` pattern in `eip8141_tests.rs`
+/// (which guards `check_validation_banned_opcode`'s literals the same way).
+/// Without this, a future change to `Opcode`'s discriminants could silently
+/// desync `on_opcode`'s filtering with no test failure.
+#[test]
+fn erc7562_tracer_opcode_byte_pins() {
+    use ethrex_levm::opcodes::Opcode;
+    // Ignore-list range boundaries (PUSH0..=SWAP16 covers every PUSHx/DUPx/SWAPx).
+    assert_eq!(u8::from(Opcode::PUSH0), 0x5F);
+    assert_eq!(u8::from(Opcode::SWAP16), 0x9F);
+    // Ignore-list named opcodes.
+    assert_eq!(u8::from(Opcode::POP), 0x50);
+    assert_eq!(u8::from(Opcode::ADD), 0x01);
+    assert_eq!(u8::from(Opcode::SUB), 0x03);
+    assert_eq!(u8::from(Opcode::MUL), 0x02);
+    assert_eq!(u8::from(Opcode::DIV), 0x04);
+    assert_eq!(u8::from(Opcode::EQ), 0x14);
+    assert_eq!(u8::from(Opcode::LT), 0x10);
+    assert_eq!(u8::from(Opcode::GT), 0x11);
+    assert_eq!(u8::from(Opcode::SLT), 0x12);
+    assert_eq!(u8::from(Opcode::SGT), 0x13);
+    assert_eq!(u8::from(Opcode::SHL), 0x1B);
+    assert_eq!(u8::from(Opcode::SHR), 0x1C);
+    assert_eq!(u8::from(Opcode::AND), 0x16);
+    assert_eq!(u8::from(Opcode::OR), 0x17);
+    assert_eq!(u8::from(Opcode::NOT), 0x19);
+    assert_eq!(u8::from(Opcode::ISZERO), 0x15);
+    // GAS itself (excluded from the ignore list; handled retroactively).
+    assert_eq!(u8::from(Opcode::GAS), 0x5A);
+    // CALL-family (suppresses retroactive GAS count).
+    assert_eq!(u8::from(Opcode::CALL), 0xF1);
+    assert_eq!(u8::from(Opcode::CALLCODE), 0xF2);
+    assert_eq!(u8::from(Opcode::DELEGATECALL), 0xF4);
+    assert_eq!(u8::from(Opcode::STATICCALL), 0xFA);
+    // RETURN/REVERT (also suppress retroactive GAS count).
+    assert_eq!(u8::from(Opcode::RETURN), 0xF3);
+    assert_eq!(u8::from(Opcode::REVERT), 0xFD);
+}
+
+/// Optional but cheap: exercises all 16 named ignore-list opcodes
+/// individually (Step 1's sketch and `on_opcode_counts_non_ignored_opcodes`
+/// only covered `ADD`), rather than relying solely on the byte-pin test and
+/// manual audit for the other 15.
+#[test]
+fn on_opcode_ignores_all_16_named_arithmetic_comparison_opcodes() {
+    const IGNORED_NAMED_OPCODES: [u8; 16] = [
+        0x50, // POP
+        0x01, // ADD
+        0x03, // SUB
+        0x02, // MUL
+        0x04, // DIV
+        0x14, // EQ
+        0x10, // LT
+        0x11, // GT
+        0x12, // SLT
+        0x13, // SGT
+        0x1B, // SHL
+        0x1C, // SHR
+        0x16, // AND
+        0x17, // OR
+        0x19, // NOT
+        0x15, // ISZERO
+    ];
+    for opcode in IGNORED_NAMED_OPCODES {
+        let mut tracer = Erc7562FrameTracer::new();
+        tracer.begin_frame(0);
+        tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+        tracer.on_opcode(opcode);
+        tracer.exit(500, Vec::new(), None).unwrap();
+        let used = &tracer.frames[0].root.used_opcodes;
+        assert_eq!(
+            used.get(&opcode),
+            None,
+            "opcode {opcode:#x} should be on the default ignore list"
+        );
+    }
+}

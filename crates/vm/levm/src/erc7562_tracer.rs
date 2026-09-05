@@ -39,9 +39,11 @@ const SHL: u8 = 0x1B;
 const SHR: u8 = 0x1C;
 const GAS: u8 = 0x5A;
 const CALL: u8 = 0xF1;
+const RETURN: u8 = 0xF3;
 const CALLCODE: u8 = 0xF2;
 const DELEGATECALL: u8 = 0xF4;
 const STATICCALL: u8 = 0xFA;
+const REVERT: u8 = 0xFD;
 
 /// Mirrors geth's `defaultIgnoredOpcodes()`: every `PUSHx`/`DUPx`/`SWAPx`
 /// (one contiguous byte range, `PUSH0..=SWAP16`) plus 16 named
@@ -78,6 +80,30 @@ fn is_ignored_opcode(opcode: u8) -> bool {
 /// "sequential GAS rule" check.
 fn is_call_family(opcode: u8) -> bool {
     matches!(opcode, CALL | CALLCODE | DELEGATECALL | STATICCALL)
+}
+
+/// Whether `opcode` suppresses a retroactive `GAS` count when it is the
+/// opcode immediately following an observed `GAS`.
+///
+/// Mirrors the COMBINED effect of two separate geth mechanisms
+/// (`eth/tracers/native/erc7562.go`, `OnOpcode`, lines 386-407):
+///
+/// - `isCall()`-family opcodes (`CALL`/`CALLCODE`/`DELEGATECALL`/
+///   `STATICCALL`) are excluded via `handleGasObserved`'s own
+///   `!isCall(opcode)` condition -- the idiomatic "forward remaining gas to
+///   the callee" pattern.
+/// - `RETURN`/`REVERT` are excluded via a DIFFERENT code path:
+///   `handleReturnRevert(opcode)` runs first in `OnOpcode`, unconditionally
+///   clearing `t.lastOpWithStack` whenever the CURRENT opcode is `RETURN` or
+///   `REVERT`; `handleGasObserved` is itself only called when
+///   `t.lastOpWithStack != nil`, so a `RETURN`/`REVERT` immediately after a
+///   `GAS` skips the retroactive count entirely, with the exact same net
+///   effect as a call-family opcode would. (A prior version of this port
+///   missed this second path, since it isn't part of `isCall()`/
+///   `defaultIgnoredOpcodes()` -- it only surfaces by reading the full
+///   `OnOpcode` dispatch order.)
+fn suppresses_gas_lookback(opcode: u8) -> bool {
+    is_call_family(opcode) || opcode == RETURN || opcode == REVERT
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
@@ -270,6 +296,10 @@ impl Erc7562FrameTracer {
     ///   (`vm.rs`) independently reproduces this identical `is_call_family`
     ///   set for its sibling EIP-8141 "sequential GAS rule" check, confirming
     ///   this is the right set to mirror here too.
+    /// - `RETURN`/`REVERT` ALSO suppress the retroactive `GAS` count, via a
+    ///   separate geth mechanism (`handleReturnRevert`, called unconditionally
+    ///   before `handleGasObserved`'s guard) rather than `isCall()` itself —
+    ///   see `suppresses_gas_lookback`'s doc comment for the full mechanism.
     ///
     /// This method is called once per opcode, in dispatch order, so the
     /// "was the previous opcode GAS" state needed for the retroactive rule is
@@ -281,10 +311,10 @@ impl Erc7562FrameTracer {
         }
 
         // Retroactive GAS accounting: a GAS observed on the PREVIOUS call to
-        // `on_opcode` only counts as "used" once we know THIS opcode is not a
-        // CALL-family opcode. Evaluated before `last_opcode` is overwritten
-        // below.
-        if self.last_opcode == Some(GAS) && !is_call_family(opcode) {
+        // `on_opcode` only counts as "used" once we know THIS opcode is
+        // neither a CALL-family opcode nor RETURN/REVERT. Evaluated before
+        // `last_opcode` is overwritten below.
+        if self.last_opcode == Some(GAS) && !suppresses_gas_lookback(opcode) {
             if let Some(frame) = self.call_stack.last_mut() {
                 *frame.used_opcodes.entry(GAS).or_insert(0) += 1;
             }
