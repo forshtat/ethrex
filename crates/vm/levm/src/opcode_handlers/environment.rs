@@ -314,9 +314,9 @@ impl OpcodeHandler for OpExtCodeSizeHandler {
         // rather than a second lookup.
         if vm.erc7562_tracer.active {
             vm.erc7562_tracer
-                .on_ext_opcode(Opcode::EXTCODESIZE as u8, address);
+                .on_ext_opcode(u8::from(Opcode::EXTCODESIZE), address);
             vm.erc7562_tracer.on_contract_size_access(
-                Opcode::EXTCODESIZE as u8,
+                u8::from(Opcode::EXTCODESIZE),
                 address,
                 || account_code_length,
             );
@@ -348,7 +348,7 @@ impl OpcodeHandler for OpExtCodeCopyHandler {
         // `on_ext_opcode`'s doc comment).
         if vm.erc7562_tracer.active {
             vm.erc7562_tracer
-                .on_ext_opcode(Opcode::EXTCODECOPY as u8, address);
+                .on_ext_opcode(u8::from(Opcode::EXTCODECOPY), address);
         }
 
         vm.current_call_frame
@@ -381,7 +381,7 @@ impl OpcodeHandler for OpExtCodeCopyHandler {
         if vm.erc7562_tracer.active {
             let code_len = code.code().len();
             vm.erc7562_tracer.on_contract_size_access(
-                Opcode::EXTCODECOPY as u8,
+                u8::from(Opcode::EXTCODECOPY),
                 address,
                 || code_len,
             );
@@ -419,7 +419,7 @@ impl OpcodeHandler for OpExtCodeHashHandler {
         // `on_ext_opcode`'s doc comment).
         if vm.erc7562_tracer.active {
             vm.erc7562_tracer
-                .on_ext_opcode(Opcode::EXTCODEHASH as u8, address);
+                .on_ext_opcode(u8::from(Opcode::EXTCODEHASH), address);
         }
 
         vm.current_call_frame
@@ -448,7 +448,7 @@ impl OpcodeHandler for OpExtCodeHashHandler {
         if vm.erc7562_tracer.active {
             let code_len = vm.db.get_code_length(address)?;
             vm.erc7562_tracer.on_contract_size_access(
-                Opcode::EXTCODEHASH as u8,
+                u8::from(Opcode::EXTCODEHASH),
                 address,
                 || code_len,
             );

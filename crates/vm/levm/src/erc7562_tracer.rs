@@ -11,7 +11,8 @@
 //! geth's own division of labor between this tracer and a bundler's
 //! interpretation of its output.
 
-use crate::errors::InternalError;
+use crate::errors::{ContextResult, InternalError, TxResult};
+use bytes::Bytes;
 use ethrex_common::{Address, H256, types::Log};
 use std::collections::HashMap;
 
@@ -116,6 +117,30 @@ fn suppresses_gas_lookback(opcode: u8) -> bool {
     is_call_family(opcode) || opcode == RETURN || opcode == REVERT
 }
 
+/// Whether `opcode` suppresses a pending EXTCODE-access lookback when it is
+/// the opcode immediately following an observed
+/// `EXTCODESIZE`/`EXTCODEHASH`/`EXTCODECOPY`.
+///
+/// Mirrors the same geth ordering quirk `suppresses_gas_lookback` documents,
+/// applied to the OTHER consumer of `t.lastOpWithStack`
+/// (`eth/tracers/native/erc7562.go`, `OnOpcode`): `handleReturnRevert(opcode)`
+/// runs FIRST and unconditionally clears `t.lastOpWithStack` whenever the
+/// CURRENT opcode is `RETURN` or `REVERT`, and `handleExtOpcodes` is only
+/// reached when `t.lastOpWithStack != nil`. So an `EXTCODEHASH; RETURN`
+/// sequence records NOTHING in geth's `extCodeAccessInfo` — the capture is
+/// dropped, not recorded. A prior version of this port recorded it anyway,
+/// producing a spurious `ext_code_access_info` entry (a false positive for a
+/// bundler enforcing ERC-7562's [OP-041]-style EXTCODE rules) for a sequence
+/// geth deliberately ignores.
+///
+/// Note the deliberate asymmetry with the `EXTCODESIZE`/`ISZERO` exemption
+/// applied alongside it: that one keys off the CAPTURED opcode as well as the
+/// current one, while this one keys off the CURRENT opcode alone — exactly as
+/// geth's two separate mechanisms do.
+fn suppresses_ext_lookback(opcode: u8) -> bool {
+    opcode == RETURN || opcode == REVERT
+}
+
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct AccessedSlots {
     pub reads: HashMap<H256, Vec<H256>>,
@@ -149,6 +174,34 @@ pub struct FrameCallTraceFrame {
     pub contract_size: HashMap<Address, ContractSizeWithOpcode>,
     #[serde(rename = "outOfGas")]
     pub out_of_gas: bool,
+    /// Every `KECCAK256` preimage observed by the tracer up to the point this
+    /// scope closed, hex-encoded and sorted.
+    ///
+    /// Mirrors geth's `callFrameWithOpcodes.KeccakPreimages`
+    /// (`json:"keccak,omitempty"`, marshalled as `[]hexutil.Bytes`), including
+    /// its placement: geth's `GetResult` attaches the tracer-scoped preimage
+    /// set to the ROOT call frame once, at trace finalization, and leaves
+    /// every nested call scope's copy empty. `keccak_preimages` is a
+    /// `HashSet`, whose iteration order is not stable run-to-run, so the set
+    /// is sorted before it lands here — geth sorts for the same reason
+    /// (`slices.SortFunc(keccak, bytes.Compare)`).
+    ///
+    /// One deliberate difference from geth, forced by this tracer's
+    /// frame-segmented output: geth has exactly one root, so "the root" and
+    /// "the whole transaction" coincide. Here each frame-transaction frame
+    /// produces its own root, and preimages accumulate across frames (they are
+    /// never reset per frame — see `on_keccak`), so a frame's root carries
+    /// every preimage observed up to and including that frame. The LAST
+    /// frame's root therefore carries the whole transaction's set, exactly as
+    /// geth's single root does; earlier frames' roots carry prefixes of it. A
+    /// consumer wanting the transaction-wide set should read the last frame's
+    /// (or union them, which yields the same thing).
+    #[serde(
+        rename = "keccak",
+        with = "ethrex_common::serde_utils::bytes::vec",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub keccak: Vec<Bytes>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize)]
@@ -296,12 +349,65 @@ impl Erc7562FrameTracer {
         if let Some(parent) = self.call_stack.last_mut() {
             parent.calls.push(frame);
         } else {
+            // The call stack emptied back out, so this is the frame's own ROOT
+            // scope closing (not a nested call). That is geth's
+            // trace-finalization point, and where geth attaches the
+            // tracer-scoped Keccak preimage set — see
+            // `FrameCallTraceFrame::keccak`.
+            frame.keccak = self
+                .keccak_preimages
+                .iter()
+                .map(|preimage| Bytes::copy_from_slice(preimage))
+                .collect();
+            frame.keccak.sort();
             self.frames.push(FrameEntry {
                 frame_index: self.current_frame_index,
                 root: frame,
             });
         }
         Ok(())
+    }
+
+    /// Ends the innermost open call scope, deriving `exit`'s arguments from a
+    /// [`ContextResult`] exactly as [`crate::tracing::LevmCallTracer::exit_context`]
+    /// does for its own (non-top) call frames.
+    ///
+    /// Exists so the CALL/CREATE-family call sites that already carry a
+    /// `ContextResult` can mirror their `self.tracer.exit_context(ctx, false)`
+    /// with a one-line `self.erc7562_tracer.exit_context(ctx)?` instead of
+    /// re-deriving the same `(gas_used, output, error)` triple four times over.
+    /// The derivation is deliberately identical to `LevmCallTracer`'s:
+    ///
+    /// - `gas_used` is `ctx_result.gas_used` (the frame's own consumed gas).
+    ///   `gas_spent` is only used for the TOP call, and this tracer never opens
+    ///   a top-call scope — see `execute_frame_tx`'s frame loop, which owns the
+    ///   only root scopes this tracer has.
+    /// - `output`/`error` come from `geth_error_string` and the same
+    ///   revert-opcode-with-data test, so the `error` string this feeds to
+    ///   `exit`'s out-of-gas detection is the geth wording (`"out of gas"`)
+    ///   rather than LEVM's own `Display` (`"Out Of Gas"`). Either matches
+    ///   `exit`'s case-insensitive test; using the geth mapping keeps the two
+    ///   tracers reporting the same thing for the same failure.
+    ///
+    /// The revert reason is dropped: `FrameCallTraceFrame` (Task 2's reduced
+    /// schema) has no `revertReason` field.
+    pub fn exit_context(&mut self, ctx_result: &ContextResult) -> Result<(), InternalError> {
+        if !self.active {
+            return Ok(());
+        }
+        let output = &ctx_result.output;
+        let (output, error) = match ctx_result.result {
+            TxResult::Revert(ref err) => {
+                let error = Some(crate::tracing::geth_error_string(err));
+                if err.is_revert_opcode() && !output.is_empty() {
+                    (output.to_vec(), error)
+                } else {
+                    (Vec::new(), error)
+                }
+            }
+            TxResult::Success => (output.to_vec(), None),
+        };
+        self.exit(ctx_result.gas_used, output, error)
     }
 
     /// Records one opcode's execution against the currently-executing call
@@ -343,18 +449,21 @@ impl Erc7562FrameTracer {
         // captured by `on_ext_opcode` one instruction ago (called from within
         // that opcode's own handler, which runs AFTER this method was called
         // for that earlier instruction) is now examined against the CURRENT
-        // opcode, mirroring geth's `handleExtOpcodes`: suppressed only when
-        // the captured opcode was specifically `EXTCODESIZE` and the CURRENT
+        // opcode, mirroring geth's `handleExtOpcodes`: suppressed when the
+        // captured opcode was specifically `EXTCODESIZE` and the CURRENT
         // opcode is `ISZERO` (the "check code exists" idiom ERC-7562's
-        // [OP-051] exempts); every other combination records the captured
-        // address. Consumed via `take()` regardless of outcome, so a second,
-        // non-adjacent opcode never re-examines the same capture.
+        // [OP-051] exempts), and ALSO when the CURRENT opcode is
+        // `RETURN`/`REVERT` (see `suppresses_ext_lookback`); every other
+        // combination records the captured address. Consumed via `take()`
+        // regardless of outcome, so a second, non-adjacent opcode never
+        // re-examines the same capture.
         if let Some((last_ext_opcode, addr)) = self.last_ext_access.take() {
-            let suppressed = last_ext_opcode == EXTCODESIZE && opcode == ISZERO;
-            if !suppressed {
-                if let Some(frame) = self.call_stack.last_mut() {
-                    frame.ext_code_access_info.push(addr);
-                }
+            let suppressed = suppresses_ext_lookback(opcode)
+                || (last_ext_opcode == EXTCODESIZE && opcode == ISZERO);
+            if !suppressed
+                && let Some(frame) = self.call_stack.last_mut()
+            {
+                frame.ext_code_access_info.push(addr);
             }
         }
 
@@ -362,19 +471,23 @@ impl Erc7562FrameTracer {
         // `on_opcode` only counts as "used" once we know THIS opcode is
         // neither a CALL-family opcode nor RETURN/REVERT. Evaluated before
         // `last_opcode` is overwritten below.
-        if self.last_opcode == Some(GAS) && !suppresses_gas_lookback(opcode) {
-            if let Some(frame) = self.call_stack.last_mut() {
-                *frame.used_opcodes.entry(GAS).or_insert(0) += 1;
-            }
+        if self.last_opcode == Some(GAS)
+            && !suppresses_gas_lookback(opcode)
+            && let Some(frame) = self.call_stack.last_mut()
+        {
+            let counter = frame.used_opcodes.entry(GAS).or_insert(0);
+            *counter = counter.saturating_add(1);
         }
 
         // Standard ignore-list filter. `GAS` is deliberately excluded from
         // this path (it is never counted directly, only via the retroactive
         // rule above), matching geth's `opcode != vm.GAS && !isIgnored`.
-        if opcode != GAS && !is_ignored_opcode(opcode) {
-            if let Some(frame) = self.call_stack.last_mut() {
-                *frame.used_opcodes.entry(opcode).or_insert(0) += 1;
-            }
+        if opcode != GAS
+            && !is_ignored_opcode(opcode)
+            && let Some(frame) = self.call_stack.last_mut()
+        {
+            let counter = frame.used_opcodes.entry(opcode).or_insert(0);
+            *counter = counter.saturating_add(1);
         }
 
         self.last_opcode = Some(opcode);
@@ -452,21 +565,24 @@ impl Erc7562FrameTracer {
                 }
             }
             SSTORE => {
-                *frame.accessed_slots.writes.entry(slot).or_insert(0) += 1;
+                let counter = frame.accessed_slots.writes.entry(slot).or_insert(0);
+                *counter = counter.saturating_add(1);
             }
             TLOAD => {
-                *frame
+                let counter = frame
                     .accessed_slots
                     .transient_reads
                     .entry(slot)
-                    .or_insert(0) += 1;
+                    .or_insert(0);
+                *counter = counter.saturating_add(1);
             }
             TSTORE => {
-                *frame
+                let counter = frame
                     .accessed_slots
                     .transient_writes
                     .entry(slot)
-                    .or_insert(0) += 1;
+                    .or_insert(0);
+                *counter = counter.saturating_add(1);
             }
             _ => {}
         }

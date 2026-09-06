@@ -234,7 +234,7 @@ fn process_output(
 /// and `invalid opcode` are geth-formatted with operands (`stack underflow (1 <=> 2)`,
 /// `invalid opcode: STOP`) that LEVM's unit variants don't carry, so we emit geth's
 /// base wording for those. Variants without a geth analogue keep LEVM's own message.
-fn geth_error_string(err: &VMError) -> String {
+pub(crate) fn geth_error_string(err: &VMError) -> String {
     use crate::errors::ExceptionalHalt::*;
     let mapped = match err {
         VMError::RevertOpcode => "execution reverted",

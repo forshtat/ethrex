@@ -549,8 +549,8 @@ fn frameparam_reports_the_state_dimension() {
         0x60, 0x0B, 0x60, 0x01, 0xB3, 0x60, 0x02, 0x55, // slot 2
         0x00,
     ];
-    let writer = Address::from_low_u64_be(0x0DDD_1);
-    let reader = Address::from_low_u64_be(0x0DDD_2);
+    let writer = Address::from_low_u64_be(0x0000_DDD1);
+    let reader = Address::from_low_u64_be(0x0000_DDD2);
     let accounts = [
         (
             FUNDED_SENDER,
@@ -618,7 +618,7 @@ fn frameparam_reports_the_state_dimension() {
 /// observe its own final gas figures while it is still spending them.
 #[test]
 fn frameparam_usage_reads_halt_for_the_current_frame() {
-    let reader = Address::from_low_u64_be(0x0DDD_3);
+    let reader = Address::from_low_u64_be(0x0000_DDD3);
     // PUSH1 0x0A; PUSH1 1; FRAMEPARAM  -- frame 1 reading ITSELF
     let code: &[u8] = &[0x60, 0x0A, 0x60, 0x01, 0xB3, 0x00];
     let accounts = [
@@ -913,8 +913,8 @@ fn sender_frame_transfers_value_to_eoa() {
 /// builder that files one writes a list its own block contradicts.
 #[test]
 fn an_unaffordable_frame_files_no_delegatee_in_the_block_access_list() {
-    let delegatee = Address::from_low_u64_be(0x7702_D1);
-    let delegator = Address::from_low_u64_be(0x7702_D0);
+    let delegatee = Address::from_low_u64_be(0x0077_02D1);
+    let delegator = Address::from_low_u64_be(0x0077_02D0);
     // `0xef0100 || delegatee`, the EIP-7702 designation.
     let mut indicator = vec![0xEF, 0x01, 0x00];
     indicator.extend_from_slice(delegatee.as_bytes());
@@ -1867,6 +1867,176 @@ fn erc7562_frame_tracer_end_to_end() {
         frames[2].root.to,
         Some(external_contract),
         "SENDER frame's root call target must be the external contract"
+    );
+}
+
+/// Regression test for final-review fix round 1's Critical #2: before that fix,
+/// `Erc7562FrameTracer::enter`/`exit` were wired ONLY at the 3 frame-loop scopes
+/// inside `execute_frame_tx` and never at any CALL/CALLCODE/DELEGATECALL/
+/// STATICCALL/CREATE(2)/SELFDESTRUCT call site. Every opcode/storage hook already
+/// targeted `call_stack.last_mut()`, so with no nested scope ever opened, a
+/// nested CALL's own accesses were silently misattributed to the OUTER frame's
+/// root scope, and `calls` stayed permanently empty.
+///
+/// `erc7562_frame_tracer_end_to_end` (Task 9) does not catch this: none of its
+/// three frames make a sub-call. This test adds one: the DEFAULT frame's target
+/// contract does an `EXTCODESIZE`, a `KECCAK256`, and a `CALL` to a second
+/// contract that itself does an `SSTORE`. On the pre-fix code this test's
+/// load-bearing assertion below would fail: the inner SSTORE would show up in
+/// `frames[1].root.accessed_slots.writes` (the caller's own root) instead of
+/// `frames[1].root.calls[0].accessed_slots.writes`, and `calls` would be empty
+/// rather than holding one entry for the inner contract.
+///
+/// Also exercises, through real bytecode dispatch rather than direct-method unit
+/// tests, Task 6's EXTCODESIZE-access wiring and Important #3's Keccak-preimage
+/// field.
+#[test]
+fn erc7562_frame_tracer_nested_call_attribution() {
+    use ethrex_levm::erc7562_tracer::Erc7562FrameTracer;
+
+    let caller_contract = Address::from_low_u64_be(0xCA11);
+    let inner_contract = Address::from_low_u64_be(0xC0C0);
+    let queried_contract = Address::repeat_byte(0xEC);
+    let preimage_byte: u8 = 0xAB;
+
+    // PUSH20 queried_contract; EXTCODESIZE; POP                    -- Task 6 EXT access
+    // PUSH1 preimage_byte; PUSH1 0; MSTORE8                        -- write 1-byte preimage
+    // PUSH1 1 (size); PUSH1 0 (offset); KECCAK256; POP             -- Important #3 keccak
+    // PUSH1 0 x5 (retLen,retOff,argsLen,argsOff,value)
+    // PUSH20 inner_contract; PUSH2 40_000 (gas); CALL; POP; STOP   -- Critical #2 nested call
+    let mut caller_code = vec![0x73_u8];
+    caller_code.extend_from_slice(queried_contract.as_bytes());
+    caller_code.extend_from_slice(&[0x3B, 0x50]);
+    caller_code.extend_from_slice(&[0x60, preimage_byte, 0x60, 0x00, 0x53]);
+    caller_code.extend_from_slice(&[0x60, 0x01, 0x60, 0x00, 0x20, 0x50]);
+    caller_code.extend_from_slice(&[
+        0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00,
+    ]);
+    caller_code.push(0x73);
+    caller_code.extend_from_slice(inner_contract.as_bytes());
+    caller_code.extend_from_slice(&[0x61, 0x9C, 0x40]);
+    caller_code.extend_from_slice(&[0xF1, 0x50, 0x00]);
+
+    let accounts = [
+        (
+            FUNDED_SENDER,
+            AUTO_SEED_SENDER_BALANCE,
+            0u64,
+            Bytes::from(APPROVE_BOTH_CODE.to_vec()),
+        ),
+        (
+            caller_contract,
+            U256::zero(),
+            0u64,
+            Bytes::from(caller_code),
+        ),
+        (
+            inner_contract,
+            U256::zero(),
+            0u64,
+            Bytes::from(SSTORE_THEN_STOP_CODE.to_vec()),
+        ),
+    ];
+
+    let tx = frame_tx_with_frames(vec![
+        verify_frame(FUNDED_SENDER), // flags 0x03; FUNDED_SENDER seeded with APPROVE_BOTH_CODE
+        Frame {
+            mode: u8::from(FrameMode::Default),
+            flags: 0,
+            target: Some(caller_contract),
+            gas_limit: 200_000,
+            state_limit: 0,
+            value: U256::zero(),
+            data: Bytes::new(),
+        },
+    ]);
+
+    let mut db = seeded_db(&accounts);
+    let env = frame_tx_env(&tx);
+    let transaction = Transaction::FrameTransaction(tx);
+    let mut vm = VM::new(
+        env,
+        &mut db,
+        &transaction,
+        LevmCallTracer::disabled(),
+        VMType::L1,
+        &NativeCrypto,
+        None,
+    )
+    .expect("VM::new should succeed for a frame tx");
+    vm.erc7562_tracer = Erc7562FrameTracer::new();
+    let report = vm
+        .execute()
+        .expect("valid: the self-verify frame approves execution and payment");
+
+    let frame_results = report.frame_results.expect("per-frame results");
+    for (idx, fr) in frame_results.iter().enumerate() {
+        assert_eq!(
+            fr.status,
+            FRAME_RECEIPT_STATUS_SUCCESS,
+            "frame {idx} did not succeed: {fr:?}"
+        );
+    }
+
+    let frames = &vm.erc7562_tracer.frames;
+    assert_eq!(frames.len(), 2, "expected one FrameEntry per frame-tx frame");
+
+    // Frame 0 is the VERIFY frame; frame 1 is the DEFAULT frame that runs
+    // `caller_code` above.
+    let caller_frame = &frames[1].root;
+
+    // Task 6: the EXTCODESIZE target must be recorded, exercised here via real
+    // bytecode dispatch rather than a direct `on_ext_opcode` unit-test call.
+    assert!(
+        caller_frame.ext_code_access_info.contains(&queried_contract),
+        "ext_code_access_info must contain the EXTCODESIZE target, got {:?}",
+        caller_frame.ext_code_access_info
+    );
+
+    // Important #3: the fed preimage must appear in the serialized `keccak`
+    // field once this frame's root scope closes.
+    assert!(
+        caller_frame
+            .keccak
+            .iter()
+            .any(|preimage| preimage.as_ref() == [preimage_byte]),
+        "keccak preimage [{preimage_byte:#x}] must be recorded, got {:?}",
+        caller_frame.keccak
+    );
+
+    // Critical #2: the inner CALL must open its OWN nested call scope. Before
+    // the fix `calls` never received an entry -- `enter` was never called from
+    // any CALL-family opcode handler.
+    assert_eq!(
+        caller_frame.calls.len(),
+        1,
+        "the inner CALL must produce exactly one nested FrameCallTraceFrame, got {:?}",
+        caller_frame.calls
+    );
+    let inner_call = &caller_frame.calls[0];
+    assert_eq!(
+        inner_call.to,
+        Some(inner_contract),
+        "the nested call's `to` must be the inner contract"
+    );
+
+    // The load-bearing assertion: the inner contract's own SSTORE (slot 0 <- 1)
+    // must be attributed to ITS OWN nested frame, not the caller's root -- this
+    // is the exact misattribution Critical #2 fixed, not merely `calls` being
+    // non-empty.
+    assert!(
+        inner_call.accessed_slots.writes.contains_key(&H256::zero()),
+        "the inner CALL's SSTORE must be attributed to its own nested frame, got {:?}",
+        inner_call.accessed_slots.writes
+    );
+    assert!(
+        !caller_frame
+            .accessed_slots
+            .writes
+            .contains_key(&H256::zero()),
+        "the caller frame's root must NOT carry the inner call's SSTORE -- that \
+         misattribution is exactly the bug Critical #2 fixed, got {:?}",
+        caller_frame.accessed_slots.writes
     );
 }
 

@@ -386,7 +386,7 @@ fn sload_after_sstore_does_not_record_original_value() {
     tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
     let slot = H256::from_low_u64_be(7);
     let addr = Address::from_low_u64_be(1);
-    tracer.on_storage_access(SSTORE, slot, addr, || H256::zero());
+    tracer.on_storage_access(SSTORE, slot, addr, H256::zero);
     tracer.on_storage_access(SLOAD, slot, addr, || H256::from_low_u64_be(999));
     tracer.exit(500, Vec::new(), None).unwrap();
     let accessed = &tracer.frames[0].root.accessed_slots;
@@ -406,9 +406,9 @@ fn sstore_increments_write_counter_every_touch() {
     tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
     let slot = H256::from_low_u64_be(3);
     let addr = Address::from_low_u64_be(1);
-    tracer.on_storage_access(SSTORE, slot, addr, || H256::zero());
-    tracer.on_storage_access(SSTORE, slot, addr, || H256::zero());
-    tracer.on_storage_access(SSTORE, slot, addr, || H256::zero());
+    tracer.on_storage_access(SSTORE, slot, addr, H256::zero);
+    tracer.on_storage_access(SSTORE, slot, addr, H256::zero);
+    tracer.on_storage_access(SSTORE, slot, addr, H256::zero);
     tracer.exit(500, Vec::new(), None).unwrap();
     let accessed = &tracer.frames[0].root.accessed_slots;
     assert_eq!(accessed.writes.get(&slot), Some(&3));
@@ -441,9 +441,9 @@ fn tstore_increments_transient_write_counter_every_touch_no_guard() {
     tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
     let slot = H256::from_low_u64_be(11);
     let addr = Address::from_low_u64_be(1);
-    tracer.on_storage_access(TSTORE, slot, addr, || H256::zero());
-    tracer.on_storage_access(TSTORE, slot, addr, || H256::zero());
-    tracer.on_storage_access(TSTORE, slot, addr, || H256::zero());
+    tracer.on_storage_access(TSTORE, slot, addr, H256::zero);
+    tracer.on_storage_access(TSTORE, slot, addr, H256::zero);
+    tracer.on_storage_access(TSTORE, slot, addr, H256::zero);
     tracer.exit(500, Vec::new(), None).unwrap();
     let accessed = &tracer.frames[0].root.accessed_slots;
     assert_eq!(accessed.transient_writes.get(&slot), Some(&3));
@@ -464,9 +464,9 @@ fn storage_and_transient_accesses_use_independent_counters() {
     let slot = H256::from_low_u64_be(42);
     let addr = Address::from_low_u64_be(1);
     tracer.on_storage_access(SLOAD, slot, addr, || H256::from_low_u64_be(1));
-    tracer.on_storage_access(SSTORE, slot, addr, || H256::zero());
-    tracer.on_storage_access(TLOAD, slot, addr, || H256::zero());
-    tracer.on_storage_access(TSTORE, slot, addr, || H256::zero());
+    tracer.on_storage_access(SSTORE, slot, addr, H256::zero);
+    tracer.on_storage_access(TLOAD, slot, addr, H256::zero);
+    tracer.on_storage_access(TSTORE, slot, addr, H256::zero);
     tracer.exit(500, Vec::new(), None).unwrap();
     let accessed = &tracer.frames[0].root.accessed_slots;
     assert_eq!(accessed.reads.get(&slot), Some(&vec![H256::from_low_u64_be(1)]));
@@ -485,9 +485,9 @@ fn on_storage_access_is_a_noop_when_disabled() {
     let slot = H256::from_low_u64_be(1);
     let addr = Address::from_low_u64_be(1);
     tracer.on_storage_access(SLOAD, slot, addr, || H256::from_low_u64_be(1));
-    tracer.on_storage_access(SSTORE, slot, addr, || H256::zero());
-    tracer.on_storage_access(TLOAD, slot, addr, || H256::zero());
-    tracer.on_storage_access(TSTORE, slot, addr, || H256::zero());
+    tracer.on_storage_access(SSTORE, slot, addr, H256::zero);
+    tracer.on_storage_access(TLOAD, slot, addr, H256::zero);
+    tracer.on_storage_access(TSTORE, slot, addr, H256::zero);
     assert!(tracer.frames.is_empty());
 }
 

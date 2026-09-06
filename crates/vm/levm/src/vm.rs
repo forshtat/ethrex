@@ -1189,6 +1189,17 @@ impl<'a> VM<'a> {
         } else {
             CallType::CALL
         };
+        // Deliberately NOT mirrored on `vm.erc7562_tracer`: this is the
+        // whole-transaction top-level scope, matched by the
+        // `tracer.exit_context(&ctx_result, true)` in `finalize_execution`. The
+        // erc7562 frame tracer has its own, narrower top-level concept — one root
+        // scope per frame-transaction frame, opened by `begin_frame`/`enter` in
+        // `execute_frame_tx`'s loop — and `Erc7562FrameTracer::exit` relies on the
+        // call stack emptying back out to know it is closing a frame root. Opening
+        // a transaction-wide scope here would keep the stack permanently non-empty,
+        // so every frame would nest into it and NO `FrameEntry` would ever be
+        // pushed. Both halves of this pair are therefore skipped, not just the
+        // exit.
         vm.tracer.enter(
             call_type,
             vm.env.origin,

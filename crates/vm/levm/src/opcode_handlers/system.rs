@@ -90,7 +90,7 @@ impl OpcodeHandler for OpCallHandler {
         if vm.erc7562_tracer.active {
             let code_len = callee_code.code().len();
             vm.erc7562_tracer
-                .on_contract_size_access(Opcode::CALL as u8, callee, || code_len);
+                .on_contract_size_access(u8::from(Opcode::CALL), callee, || code_len);
         }
         let is_delegation_7702 = delegation.is_some();
         let (eip7702_gas_consumed, code_address) = match delegation {
@@ -216,6 +216,15 @@ impl OpcodeHandler for OpCallHandler {
             gas_limit,
             &data,
         );
+        // ERC-7562/EIP-8141 frame tracer: open the matching nested call scope, so
+        // every opcode/storage/EXTCODE access the callee performs is attributed to
+        // ITS own `FrameCallTraceFrame` rather than to the enclosing frame's root.
+        // Placed next to the `LevmCallTracer` call it mirrors, with the same
+        // `from`/`to` pair; `call_type`/`value` are dropped (Task 2's reduced
+        // schema carries neither). No `active` guard is needed — `enter` already
+        // early-returns when inactive, exactly like `LevmCallTracer::enter`.
+        vm.erc7562_tracer
+            .enter(vm.current_call_frame.to, callee, &data, gas_limit);
 
         // Generic call.
         vm.generic_call(
@@ -280,7 +289,7 @@ impl OpcodeHandler for OpCallCodeHandler {
         if vm.erc7562_tracer.active {
             let code_len = target_code.code().len();
             vm.erc7562_tracer
-                .on_contract_size_access(Opcode::CALLCODE as u8, address, || code_len);
+                .on_contract_size_access(u8::from(Opcode::CALLCODE), address, || code_len);
         }
         let is_delegation_7702 = delegation.is_some();
         let (eip7702_gas_consumed, code_address) = match delegation {
@@ -361,6 +370,11 @@ impl OpcodeHandler for OpCallCodeHandler {
             gas_limit,
             &data,
         );
+        // ERC-7562/EIP-8141 frame tracer: matching nested call scope (see the CALL
+        // handler's comment). `to` is `code_address`, mirroring the callTracer's
+        // own choice for CALLCODE.
+        vm.erc7562_tracer
+            .enter(vm.current_call_frame.to, code_address, &data, gas_limit);
 
         // Generic call.
         vm.generic_call(
@@ -413,7 +427,7 @@ impl OpcodeHandler for OpDelegateCallHandler {
         if vm.erc7562_tracer.active {
             let code_len = target_code.code().len();
             vm.erc7562_tracer
-                .on_contract_size_access(Opcode::DELEGATECALL as u8, address, || code_len);
+                .on_contract_size_access(u8::from(Opcode::DELEGATECALL), address, || code_len);
         }
         let is_delegation_7702 = delegation.is_some();
         let (eip7702_gas_consumed, code_address) = match delegation {
@@ -494,6 +508,10 @@ impl OpcodeHandler for OpDelegateCallHandler {
             gas_limit,
             &data,
         );
+        // ERC-7562/EIP-8141 frame tracer: matching nested call scope (see the CALL
+        // handler's comment).
+        vm.erc7562_tracer
+            .enter(vm.current_call_frame.to, code_address, &data, gas_limit);
 
         // Generic call.
         vm.generic_call(
@@ -546,7 +564,7 @@ impl OpcodeHandler for OpStaticCallHandler {
         if vm.erc7562_tracer.active {
             let code_len = target_code.code().len();
             vm.erc7562_tracer
-                .on_contract_size_access(Opcode::STATICCALL as u8, address, || code_len);
+                .on_contract_size_access(u8::from(Opcode::STATICCALL), address, || code_len);
         }
         let is_delegation_7702 = delegation.is_some();
         let (eip7702_gas_consumed, code_address) = match delegation {
@@ -625,6 +643,10 @@ impl OpcodeHandler for OpStaticCallHandler {
             gas_limit,
             &data,
         );
+        // ERC-7562/EIP-8141 frame tracer: matching nested call scope (see the CALL
+        // handler's comment).
+        vm.erc7562_tracer
+            .enter(vm.current_call_frame.to, address, &data, gas_limit);
 
         // Generic call.
         vm.generic_call(
@@ -880,6 +902,13 @@ impl OpcodeHandler for OpSelfDestructHandler {
             &Default::default(),
         );
         vm.tracer.exit_early(0, None)?;
+        // ERC-7562/EIP-8141 frame tracer: the callTracer records SELFDESTRUCT as an
+        // immediately-closed zero-gas call scope; mirror it so both tracers agree on
+        // the shape of the call tree (an empty `calls` entry, no opcodes attributed
+        // to it — nothing executes inside it).
+        vm.erc7562_tracer
+            .enter(vm.current_call_frame.to, beneficiary, &[], 0);
+        vm.erc7562_tracer.exit(0, Vec::new(), None)?;
 
         Ok(OpcodeResult::Halt)
     }
@@ -985,8 +1014,14 @@ impl<'a> VM<'a> {
                 let preview_gas = gas_cost::max_message_call_gas(&self.current_call_frame)?;
                 self.tracer
                     .enter(call_type, deployer, new_address, value, preview_gas, &code);
+                // ERC-7562/EIP-8141 frame tracer: matching nested scope for the
+                // CREATE/CREATE2 early-out (see the CALL handler's comment).
+                self.erc7562_tracer
+                    .enter(deployer, new_address, &code, preview_gas);
                 self.current_call_frame.stack.push(FAIL)?;
                 self.tracer.exit_early(0, Some(reason.to_string()))?;
+                self.erc7562_tracer
+                    .exit(0, Vec::new(), Some(reason.to_string()))?;
                 return Ok(OpcodeResult::Continue);
             }
         }
@@ -1030,6 +1065,10 @@ impl<'a> VM<'a> {
         // Log CREATE in tracer (success path) with the reserved child gas.
         self.tracer
             .enter(call_type, deployer, new_address, value, gas_limit, &code);
+        // ERC-7562/EIP-8141 frame tracer: matching nested scope for the
+        // CREATE/CREATE2 success path (see the CALL handler's comment).
+        self.erc7562_tracer
+            .enter(deployer, new_address, &code, gas_limit);
 
         // Increment sender nonce (irreversible change)
         self.increment_account_nonce(deployer)?;
@@ -1046,6 +1085,11 @@ impl<'a> VM<'a> {
             self.current_call_frame.stack.push(FAIL)?;
             self.tracer
                 .exit_early(gas_limit, Some("CreateAccExists".to_string()))?;
+            self.erc7562_tracer.exit(
+                gas_limit,
+                Vec::new(),
+                Some("CreateAccExists".to_string()),
+            )?;
             return Ok(OpcodeResult::Continue);
         }
 
@@ -1313,6 +1357,9 @@ impl<'a> VM<'a> {
             }
 
             self.tracer.exit_context(&ctx_result, false)?;
+            // ERC-7562/EIP-8141 frame tracer: close the scope opened by the
+            // CALL-family handler above (precompile path).
+            self.erc7562_tracer.exit_context(&ctx_result)?;
         } else {
             // Create BAL checkpoint before entering nested call for potential revert per EIP-7928
             let bal_checkpoint = self.db.bal_recorder.as_ref().map(|r| r.checkpoint());
@@ -1492,6 +1539,9 @@ impl<'a> VM<'a> {
         };
 
         self.tracer.exit_context(ctx_result, false)?;
+        // ERC-7562/EIP-8141 frame tracer: close the scope opened by the
+        // CALL-family handler (normal, non-precompile call return path).
+        self.erc7562_tracer.exit_context(ctx_result)?;
 
         let mut stack = stack;
         stack.clear();
@@ -1578,6 +1628,9 @@ impl<'a> VM<'a> {
         };
 
         self.tracer.exit_context(ctx_result, false)?;
+        // ERC-7562/EIP-8141 frame tracer: close the scope opened by the
+        // CREATE/CREATE2 handler.
+        self.erc7562_tracer.exit_context(ctx_result)?;
 
         let mut stack = stack;
         stack.clear();
@@ -1601,6 +1654,10 @@ impl<'a> VM<'a> {
             .ok_or(InternalError::Overflow)?;
         callframe.stack.push(FAIL)?; // It's the same as revert for CREATE
 
+        // ERC-7562/EIP-8141 frame tracer: close the scope opened by the CALL-family
+        // handler on this early-revert path ("OutOfFund"/"MaxDepth").
+        self.erc7562_tracer
+            .exit(0, Vec::new(), Some(reason.clone()))?;
         self.tracer.exit_early(0, Some(reason))?;
         Ok(())
     }

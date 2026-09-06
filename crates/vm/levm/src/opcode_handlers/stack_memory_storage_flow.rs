@@ -203,7 +203,7 @@ impl OpcodeHandler for OpTLoadHandler {
                 hash
             };
             vm.erc7562_tracer
-                .on_storage_access(Opcode::TLOAD as u8, slot, address, || H256::zero());
+                .on_storage_access(u8::from(Opcode::TLOAD), slot, address, H256::zero);
         }
 
         vm.current_call_frame
@@ -238,7 +238,7 @@ impl OpcodeHandler for OpTStoreHandler {
                 hash
             };
             vm.erc7562_tracer
-                .on_storage_access(Opcode::TSTORE as u8, slot, address, || H256::zero());
+                .on_storage_access(u8::from(Opcode::TSTORE), slot, address, H256::zero);
         }
 
         vm.substate
@@ -286,7 +286,7 @@ impl OpcodeHandler for OpSLoadHandler {
         // `t.env.StateDB.GetState(addr, slot)` -- already computed above, so
         // the closure is a zero-cost wrapper rather than a second state read.
         if vm.erc7562_tracer.active {
-            vm.erc7562_tracer.on_storage_access(Opcode::SLOAD as u8, key, address, || {
+            vm.erc7562_tracer.on_storage_access(u8::from(Opcode::SLOAD), key, address, || {
                 H256::from(value.to_big_endian())
             });
         }
@@ -364,7 +364,7 @@ impl OpcodeHandler for OpSStoreHandler {
         // is ever recorded for a write, only the touch count).
         if vm.erc7562_tracer.active {
             vm.erc7562_tracer
-                .on_storage_access(Opcode::SSTORE as u8, key, to, || H256::zero());
+                .on_storage_access(u8::from(Opcode::SSTORE), key, to, H256::zero);
         }
 
         // EIP-8037 (Amsterdam+): check if state gas is needed for new storage slot (0 -> nonzero),
