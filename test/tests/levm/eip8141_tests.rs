@@ -1701,6 +1701,175 @@ fn state_gas_reservoir_does_not_leak_across_frames() {
     );
 }
 
+// ==================== Erc7562FrameTracer end-to-end verification ====================
+
+/// End-to-end proof that `Erc7562FrameTracer` produces correct, complete output for a
+/// realistic multi-frame transaction, checked field-by-field against hand-computed
+/// expected values -- the integration point where the tracer's individual pieces
+/// (opcode counting, storage-access tracking, per-frame segmentation) either cohere
+/// or reveal a gap.
+///
+/// The transaction has three frames:
+/// - Frame 0 (DEFAULT, "deploy"): targets a contract whose code runs `CREATE2` (with an
+///   empty init code, so the create itself is trivial) then `STOP`. Exercises `used_opcodes`.
+/// - Frame 1 (VERIFY, "self_verify"): targets `FUNDED_SENDER` itself, whose code `SLOAD`s
+///   slot 0 (pre-seeded with a non-zero value) then calls `APPROVE(scope=3)` -- granting
+///   both execution and payment approval, exactly like `verify_frame`'s convention, but
+///   with a storage read spliced in first so `accessed_slots.reads` has something to check.
+/// - Frame 2 (SENDER): targets a separate external contract (plain `STOP` code). Requires
+///   frame 1's execution approval to be admissible at all.
+///
+/// Built directly against `VM`/`Erc7562FrameTracer` (mirroring `LEVM::trace_tx_erc7562`'s
+/// own `VM::new` + `vm.erc7562_tracer = Erc7562FrameTracer::new()` + `vm.execute()` shape)
+/// rather than through that entry point, so the harness's `seeded_db` can be used and then
+/// mutated to seed FUNDED_SENDER's storage slot 0 -- `SeededAccount` has no storage field,
+/// and `trace_tx_erc7562`'s own `setup_env` would derive the fork from the in-memory store's
+/// default `ChainConfig` rather than the harness's pinned `Fork::Hegota`.
+#[test]
+fn erc7562_frame_tracer_end_to_end() {
+    use ethrex_levm::erc7562_tracer::Erc7562FrameTracer;
+
+    let deploy_contract = Address::from_low_u64_be(0xD0D0);
+    let external_contract = Address::from_low_u64_be(0xE0E0);
+    let slot = H256::zero();
+    let preexisting_value = U256::from(0x42u64);
+
+    // PUSH1 0 (salt); PUSH1 0 (size); PUSH1 0 (offset); PUSH1 0 (value); CREATE2; STOP.
+    // All-zero args make the create itself trivial (empty init code); what matters here
+    // is that CREATE2 (0xF5) actually dispatches, for `used_opcodes` to record it.
+    const DEPLOY_CODE: &[u8] = &[
+        0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0xF5, 0x00,
+    ];
+
+    // PUSH1 0 (slot); SLOAD; POP; PUSH1 3 (scope); PUSH1 0; PUSH1 0; APPROVE.
+    // The SLOAD reads slot 0 (pre-seeded below) before the frame approves scope 3
+    // (APPROVE_EXECUTION_AND_PAYMENT), matching `verify_frame`'s self-verify shape.
+    const SELF_VERIFY_CODE: &[u8] = &[
+        0x60, 0x00, 0x54, 0x50, 0x60, 0x03, 0x60, 0x00, 0x60, 0x00, 0xAA,
+    ];
+
+    let accounts = [
+        (
+            FUNDED_SENDER,
+            AUTO_SEED_SENDER_BALANCE,
+            0u64,
+            Bytes::from(SELF_VERIFY_CODE.to_vec()),
+        ),
+        (
+            deploy_contract,
+            U256::zero(),
+            0u64,
+            Bytes::from(DEPLOY_CODE.to_vec()),
+        ),
+        (
+            external_contract,
+            U256::zero(),
+            0u64,
+            Bytes::from(vec![0x00u8]), // STOP
+        ),
+    ];
+
+    let tx = frame_tx_with_frames(vec![
+        Frame {
+            mode: u8::from(FrameMode::Default),
+            flags: 0,
+            target: Some(deploy_contract),
+            gas_limit: 200_000,
+            // CREATE2's created address doesn't exist yet, so EIP-8037 charges the
+            // NEW_ACCOUNT state-gas cost from the frame's *state* budget, not its
+            // execution budget (see `generic_create`'s `increase_state_gas` call).
+            state_limit: NEW_ACCOUNT_STATE_GAS,
+            value: U256::zero(),
+            data: Bytes::new(),
+        },
+        verify_frame(FUNDED_SENDER),
+        Frame {
+            mode: u8::from(FrameMode::Sender),
+            flags: 0,
+            target: Some(external_contract),
+            gas_limit: 100_000,
+            state_limit: 0,
+            value: U256::zero(),
+            data: Bytes::new(),
+        },
+    ]);
+
+    let mut db = seeded_db(&accounts);
+    db.current_accounts_state
+        .get_mut(&FUNDED_SENDER)
+        .expect("FUNDED_SENDER was just seeded above")
+        .storage
+        .insert(slot, preexisting_value);
+
+    let env = frame_tx_env(&tx);
+    let transaction = Transaction::FrameTransaction(tx);
+    let mut vm = VM::new(
+        env,
+        &mut db,
+        &transaction,
+        LevmCallTracer::disabled(),
+        VMType::L1,
+        &NativeCrypto,
+        None,
+    )
+    .expect("VM::new should succeed for a frame tx");
+    vm.erc7562_tracer = Erc7562FrameTracer::new();
+    let report = vm
+        .execute()
+        .expect("valid: the self-verify frame approves execution and payment");
+
+    // Sanity: every frame actually succeeded. A failed/skipped frame would change which of
+    // the assertions below are meaningful (e.g. a reverted deploy frame would still get a
+    // FrameEntry, just not one that ran CREATE2).
+    let frame_results = report.frame_results.expect("per-frame results");
+    for (idx, fr) in frame_results.iter().enumerate() {
+        assert_eq!(
+            fr.status,
+            FRAME_RECEIPT_STATUS_SUCCESS,
+            "frame {idx} did not succeed: {fr:?}"
+        );
+    }
+
+    let frames = &vm.erc7562_tracer.frames;
+    assert_eq!(frames.len(), 3, "expected one FrameEntry per frame-tx frame");
+    for (idx, entry) in frames.iter().enumerate() {
+        assert_eq!(entry.frame_index, idx, "FrameEntry out of order");
+    }
+
+    // Frame 0 (deploy): CREATE2 must show up in used_opcodes.
+    const CREATE2: u8 = 0xF5;
+    assert!(
+        frames[0].root.used_opcodes.contains_key(&CREATE2),
+        "deploy frame's used_opcodes must record CREATE2, got {:?}",
+        frames[0].root.used_opcodes
+    );
+
+    // Frame 1 (self_verify): the SLOAD of slot 0 must be recorded with its pre-read value.
+    let recorded = frames[1]
+        .root
+        .accessed_slots
+        .reads
+        .get(&slot)
+        .unwrap_or_else(|| {
+            panic!(
+                "slot {slot:?} must be recorded as read, got {:?}",
+                frames[1].root.accessed_slots.reads
+            )
+        });
+    assert_eq!(
+        recorded,
+        &vec![H256::from_low_u64_be(0x42)],
+        "the recorded pre-read value must match what was seeded before execution"
+    );
+
+    // Frame 2 (SENDER): the root call's `to` must be the external contract.
+    assert_eq!(
+        frames[2].root.to,
+        Some(external_contract),
+        "SENDER frame's root call target must be the external contract"
+    );
+}
+
 // ==================== frame_tx opcode handler unit tests ====================
 // (migrated from crates/vm/levm/src/opcode_handlers/frame_tx.rs)
 
