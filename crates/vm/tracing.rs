@@ -110,7 +110,14 @@ impl Evm {
                 "Missing Transaction for Trace".to_string(),
             ))?;
 
-        LEVM::trace_tx_erc7562(&mut self.db, &block.header, tx, self.vm_type, self.crypto.as_ref())
+        LEVM::trace_tx_erc7562(
+            &mut self.db,
+            &block.header,
+            tx,
+            self.vm_type,
+            self.crypto.as_ref(),
+            self.stateless_validator.as_deref(),
+        )
     }
 
     /// Traces a standalone, not-yet-mined transaction with the ERC-7562/EIP-8141 native
@@ -125,7 +132,14 @@ impl Evm {
         tx: &Transaction,
         block_header: &BlockHeader,
     ) -> Result<Vec<FrameEntry>, EvmError> {
-        LEVM::trace_tx_erc7562(&mut self.db, block_header, tx, self.vm_type, self.crypto.as_ref())
+        LEVM::trace_tx_erc7562(
+            &mut self.db,
+            block_header,
+            tx,
+            self.vm_type,
+            self.crypto.as_ref(),
+            self.stateless_validator.as_deref(),
+        )
     }
 
     /// Traces a synthetic `eth_call`-shaped request with the ERC-7562/EIP-8141 native
@@ -136,7 +150,14 @@ impl Evm {
         block_header: &BlockHeader,
         tx: &GenericTransaction,
     ) -> Result<Vec<FrameEntry>, EvmError> {
-        LEVM::trace_call_erc7562(&mut self.db, block_header, tx, self.vm_type, self.crypto.as_ref())
+        LEVM::trace_call_erc7562(
+            &mut self.db,
+            block_header,
+            tx,
+            self.vm_type,
+            self.crypto.as_ref(),
+            self.stateless_validator.as_deref(),
+        )
     }
 
     /// Traces a synthetic `eth_call`-shaped request with the callTracer (`debug_traceCall`).

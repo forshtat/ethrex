@@ -230,6 +230,7 @@ impl LEVM {
         tx: &Transaction,
         vm_type: VMType,
         crypto: &dyn Crypto,
+        stateless_validator: Option<&dyn StatelessValidator>,
     ) -> Result<Vec<FrameEntry>, EvmError> {
         let env = Self::setup_env(
             tx,
@@ -240,7 +241,7 @@ impl LEVM {
             db,
             vm_type,
         )?;
-        Self::run_erc7562_trace(db, env, tx, vm_type, crypto)
+        Self::run_erc7562_trace(db, env, tx, vm_type, crypto, stateless_validator)
     }
 
     /// `debug_traceCall` counterpart of [`Self::trace_tx_erc7562`].
@@ -260,9 +261,10 @@ impl LEVM {
         tx: &GenericTransaction,
         vm_type: VMType,
         crypto: &dyn Crypto,
+        stateless_validator: Option<&dyn StatelessValidator>,
     ) -> Result<Vec<FrameEntry>, EvmError> {
         let (env, converted) = prepare_call_env(tx, block_header, db)?;
-        Self::run_erc7562_trace(db, env, &converted, vm_type, crypto)
+        Self::run_erc7562_trace(db, env, &converted, vm_type, crypto, stateless_validator)
     }
 
     /// Runs `tx` with the ERC-7562/EIP-8141 frame tracer over a prepared `env`. Shared by
@@ -273,6 +275,7 @@ impl LEVM {
         tx: &Transaction,
         vm_type: VMType,
         crypto: &dyn Crypto,
+        stateless_validator: Option<&dyn StatelessValidator>,
     ) -> Result<Vec<FrameEntry>, EvmError> {
         let mut vm = VM::new(
             env,
@@ -281,7 +284,7 @@ impl LEVM {
             LevmCallTracer::disabled(),
             vm_type,
             crypto,
-            None,
+            stateless_validator,
         )?;
         vm.erc7562_tracer = Erc7562FrameTracer::new();
         vm.execute()?;
@@ -800,5 +803,200 @@ fn filter_diff_pre_storage(pre: &mut PrestateTrace, post_cache: &CacheDB) {
                 .unwrap_or_default();
             *v != H256::from_uint(&post_val)
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ethrex_common::types::{AccountState, ChainConfig, Code, CodeMetadata, TxKind};
+    use ethrex_common::utils::keccak;
+    use ethrex_crypto::NativeCrypto;
+    use ethrex_levm::db::Database;
+    use ethrex_levm::errors::DatabaseError;
+    use ethrex_levm::precompiles::EXECUTE;
+    use ethrex_rlp::encode::PayloadRLPEncode;
+    use k256::ecdsa::SigningKey;
+    use std::sync::Arc;
+
+    /// Mock `StatelessValidator`. Its `verify` is never actually reached by
+    /// [`trace_tx_erc7562_forwards_stateless_validator_to_execute_precompile`]:
+    /// `execute_precompile::execute_precompile` checks for `Some(validator)`
+    /// BEFORE decoding calldata, and an empty-calldata call fails SSZ decode
+    /// (a normal, non-fatal `ExceptionalHalt`) long before `verify` would run.
+    /// What the test actually proves is that *some* validator reached the
+    /// precompile at all: with `None`, the call fails with the fatal
+    /// `VMError::Internal("... requires a StatelessValidator ...")` before
+    /// decode is even attempted -- that's the bug this regression test guards.
+    struct MockValidator;
+
+    impl StatelessValidator for MockValidator {
+        fn verify(
+            &self,
+            _input: &ethrex_common::types::stateless_ssz::SszStatelessInput,
+        ) -> Result<Vec<u8>, ethrex_levm::errors::VMError> {
+            unreachable!("decode fails on empty calldata before verify is ever called")
+        }
+    }
+
+    /// Minimal `Database`: an empty world except `sender`'s account state
+    /// (nonce/balance both zero, which is fine since the test tx has no fee
+    /// and no value), under a chain config with every fork active, including
+    /// LStar (required for the EIP-8079 `EXECUTE` precompile to be
+    /// recognized -- see `precompiles::is_precompile`).
+    struct MockDb {
+        chain_config: ChainConfig,
+    }
+
+    impl Database for MockDb {
+        fn get_account_state(&self, _address: Address) -> Result<AccountState, DatabaseError> {
+            // `code_hash: EMPTY_KECCAK_HASH` (not the zero hash `default()` gives)
+            // marks every account here as a codeless EOA, so the signed test tx's
+            // sender passes EIP-3607.
+            Ok(AccountState {
+                code_hash: *EMPTY_KECCAK_HASH,
+                ..Default::default()
+            })
+        }
+        fn get_storage_value(&self, _address: Address, _key: H256) -> Result<U256, DatabaseError> {
+            Ok(U256::zero())
+        }
+        fn get_block_hash(&self, _block_number: u64) -> Result<H256, DatabaseError> {
+            Ok(H256::zero())
+        }
+        fn get_chain_config(&self) -> Result<ChainConfig, DatabaseError> {
+            Ok(self.chain_config)
+        }
+        fn get_account_code(&self, _code_hash: H256) -> Result<Code, DatabaseError> {
+            Ok(Code::from_bytecode(bytes::Bytes::new(), &NativeCrypto))
+        }
+        fn get_code_metadata(&self, _code_hash: H256) -> Result<CodeMetadata, DatabaseError> {
+            Ok(CodeMetadata { length: 0 })
+        }
+    }
+
+    /// LStar-active chain config (every earlier fork active from genesis too,
+    /// since `EVMConfig::new_from_chain_config` expects a coherent schedule).
+    fn lstar_chain_config() -> ChainConfig {
+        ChainConfig {
+            chain_id: 1,
+            homestead_block: Some(0),
+            eip150_block: Some(0),
+            eip155_block: Some(0),
+            eip158_block: Some(0),
+            byzantium_block: Some(0),
+            constantinople_block: Some(0),
+            petersburg_block: Some(0),
+            istanbul_block: Some(0),
+            berlin_block: Some(0),
+            london_block: Some(0),
+            terminal_total_difficulty: Some(0),
+            terminal_total_difficulty_passed: true,
+            shanghai_time: Some(0),
+            cancun_time: Some(0),
+            prague_time: Some(0),
+            amsterdam_time: Some(0),
+            lstar_time: Some(0),
+            ..Default::default()
+        }
+    }
+
+    const PRIVATE_KEY: [u8; 32] = [
+        0x4c, 0x08, 0x83, 0xa6, 0x91, 0x02, 0x93, 0x7d, 0x62, 0x31, 0x47, 0x1b, 0x5d, 0xbb, 0x62,
+        0x04, 0xfe, 0x51, 0x29, 0x61, 0x70, 0x82, 0x79, 0x2a, 0xe4, 0x68, 0xd0, 0x1a, 0x3f, 0x36,
+        0x23, 0x18,
+    ];
+
+    /// A zero-fee, zero-value, empty-calldata signed call straight to the
+    /// EIP-8079 `EXECUTE` precompile address (0x...0101). Reaching it is the
+    /// whole point of this test -- the calldata content doesn't matter, see
+    /// [`MockValidator`]'s doc comment for why.
+    fn execute_precompile_call_tx() -> Transaction {
+        let tx = ethrex_common::types::EIP1559Transaction {
+            chain_id: 1,
+            nonce: 0,
+            max_priority_fee_per_gas: 0,
+            max_fee_per_gas: 0,
+            gas_limit: 100_000,
+            to: TxKind::Call(EXECUTE.address),
+            value: U256::zero(),
+            ..Default::default()
+        };
+
+        let mut buf = vec![0x02u8];
+        tx.encode_payload(&mut buf);
+        let hash = keccak(&buf);
+
+        let signing_key = SigningKey::from_bytes(&PRIVATE_KEY.into()).expect("valid key");
+        let (sig, rid) = signing_key
+            .sign_prehash_recoverable(&hash.0)
+            .expect("sign ok");
+        let sig_bytes = sig.to_bytes();
+
+        Transaction::EIP1559Transaction(ethrex_common::types::EIP1559Transaction {
+            signature_r: U256::from_big_endian(&sig_bytes[..32]),
+            signature_s: U256::from_big_endian(&sig_bytes[32..]),
+            signature_y_parity: rid.to_byte() != 0,
+            ..tx
+        })
+    }
+
+    fn header() -> BlockHeader {
+        BlockHeader {
+            number: 1,
+            timestamp: 0,
+            gas_limit: 30_000_000,
+            base_fee_per_gas: Some(0),
+            ..Default::default()
+        }
+    }
+
+    fn db() -> GeneralizedDatabase {
+        GeneralizedDatabase::new(Arc::new(MockDb {
+            chain_config: lstar_chain_config(),
+        }))
+    }
+
+    /// Regression for the fix-round bug: `run_erc7562_trace` hardcoded
+    /// `VM::new(..., None)` for `stateless_validator`, dropping whatever
+    /// `trace_tx_erc7562`'s own caller passed. Any transaction whose
+    /// top-level call reaches the EIP-8079 `EXECUTE` precompile (gated to
+    /// `Fork::LStar` + `VMType::L1`, see
+    /// `execute_precompile.rs`/`precompiles.rs::is_precompile`) then hit the
+    /// precompile's `VMError::Internal("... requires a StatelessValidator
+    /// ...")` guard -- a FATAL error (`should_propagate() == true`) that
+    /// aborted the whole trace pass, regardless of whether a real validator
+    /// was available upstream (`Evm::trace_tx_erc7562_standalone`, used by
+    /// `ethrex_simulateFrameTransaction`'s `trace: true`, always has one --
+    /// see `attach_stateless_validator`).
+    #[test]
+    fn trace_tx_erc7562_forwards_stateless_validator_to_execute_precompile() {
+        let tx = execute_precompile_call_tx();
+        let header = header();
+
+        let without_validator =
+            LEVM::trace_tx_erc7562(&mut db(), &header, &tx, VMType::L1, &NativeCrypto, None);
+        assert!(
+            without_validator.is_err(),
+            "no StatelessValidator available: the EXECUTE precompile call must \
+             fail with the internal 'no validator' error, got: {without_validator:?}"
+        );
+
+        let validator = MockValidator;
+        let with_validator = LEVM::trace_tx_erc7562(
+            &mut db(),
+            &header,
+            &tx,
+            VMType::L1,
+            &NativeCrypto,
+            Some(&validator),
+        );
+        assert!(
+            with_validator.is_ok(),
+            "a StatelessValidator IS available (forwarded from the caller, as \
+             Evm::trace_tx_erc7562_standalone does in production) -- the \
+             EXECUTE precompile call must reach it rather than hit the \
+             'no validator' internal error, got: {with_validator:?}"
+        );
     }
 }
