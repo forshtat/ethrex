@@ -108,6 +108,20 @@ struct SimulateFrameTransactionResult {
     /// `{"trace": false}`) never constructs the tracer or runs the extra pass this
     /// field requires, so untraced callers pay nothing for this field's existence.
     erc7562_trace: Option<Vec<FrameEntry>>,
+    /// Stringified error from the trace pass, distinguishing "tracing was
+    /// requested but the trace pass itself failed" from every other reason
+    /// `erc7562_trace` can be `null` (tracing not requested, the prefix was
+    /// invalid, the tx exceeded the gas cap, or the trace pass simply was not
+    /// reached). Populated only when `self.trace == true` AND the gas pass
+    /// succeeded (`frames.is_some()`, so the transaction is known to execute)
+    /// AND the separate trace pass in [`SimulateFrameTransactionRequest::execute_for_trace`]
+    /// itself failed (a setup error constructing the throwaway state/EVM, or the
+    /// traced execution erroring) -- `null` in every other case, including when
+    /// `erc7562_trace` is present (a successful trace pass). This keeps the
+    /// field fully additive: a caller who never passes `{"trace": true}`, or
+    /// whose trace pass succeeds, always sees this as `null`/absent, byte-for-byte
+    /// unchanged from before this field existed.
+    erc7562_trace_error: Option<String>,
 }
 
 /// Per-frame execution outcome for the full-execution step.
@@ -313,6 +327,7 @@ impl RpcHandler for SimulateFrameTransactionRequest {
                 execution_status: None,
                 execution_error: None,
                 erc7562_trace: None,
+                erc7562_trace_error: None,
             });
         }
 
@@ -338,6 +353,7 @@ impl RpcHandler for SimulateFrameTransactionRequest {
                 execution_status: None,
                 execution_error: None,
                 erc7562_trace: None,
+                erc7562_trace_error: None,
             });
         }
 
@@ -352,10 +368,19 @@ impl RpcHandler for SimulateFrameTransactionRequest {
         // runs on a THIRD fresh throwaway state -- same rationale as the gas pass
         // running on its own separate state from the prefix simulation above -- only
         // once the gas pass has proven the transaction actually executes.
-        let erc7562_trace = if self.trace && frames.is_some() {
-            self.execute_for_trace(&context, &header)
+        //
+        // `execute_for_trace` distinguishes "not requested" from "requested but
+        // failed" via `Result` rather than swallowing every failure into `None`,
+        // so a caller who explicitly asked for a trace and hit a genuine failure
+        // sees `erc7562TraceError` populated instead of an indistinguishable
+        // `erc7562Trace: null`.
+        let (erc7562_trace, erc7562_trace_error) = if self.trace && frames.is_some() {
+            match self.execute_for_trace(&context, &header) {
+                Ok(trace) => (Some(trace), None),
+                Err(error) => (None, Some(error)),
+            }
         } else {
-            None
+            (None, None)
         };
 
         to_value(SimulateFrameTransactionResult {
@@ -369,6 +394,7 @@ impl RpcHandler for SimulateFrameTransactionRequest {
             execution_status,
             execution_error,
             erc7562_trace,
+            erc7562_trace_error,
         })
     }
 }
@@ -463,17 +489,24 @@ impl SimulateFrameTransactionRequest {
     /// pattern this function already establishes -- `execute_for_gas` itself runs on
     /// its own fresh state, separate from the prefix simulation before it, for the
     /// identical reason: a throwaway state cannot be replayed once a pass has
-    /// mutated it. Returns `None` on any setup or execution error, since a failure
-    /// here should not take down the gas-measuring result this trace is layered on.
+    /// mutated it. Returns `Err` (stringified) on any setup or execution error rather
+    /// than swallowing it -- the caller distinguishes "not requested" (this method
+    /// never called) from "requested but failed" (`Err` here) by populating
+    /// `SimulateFrameTransactionResult::erc7562_trace_error` in the latter case, so a
+    /// genuine trace-pass failure is never indistinguishable from an opt-out.
     fn execute_for_trace(
         &self,
         context: &RpcApiContext,
         header: &BlockHeader,
-    ) -> Option<Vec<FrameEntry>> {
-        let vm_db = StoreVmDatabase::new(context.storage.clone(), header.clone()).ok()?;
-        let mut vm = context.blockchain.new_evm(vm_db).ok()?;
+    ) -> Result<Vec<FrameEntry>, String> {
+        let vm_db = StoreVmDatabase::new(context.storage.clone(), header.clone())
+            .map_err(|error| error.to_string())?;
+        let mut vm = context
+            .blockchain
+            .new_evm(vm_db)
+            .map_err(|error| error.to_string())?;
         vm.trace_tx_erc7562_standalone(&self.transaction, header)
-            .ok()
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -492,6 +525,7 @@ fn structurally_invalid(violation: String, max_cost: String) -> Result<Value, Rp
         execution_status: None,
         execution_error: None,
         erc7562_trace: None,
+        erc7562_trace_error: None,
     })
 }
 
