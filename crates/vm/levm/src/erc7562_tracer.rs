@@ -238,7 +238,19 @@ pub struct Erc7562FrameTracer {
     /// `frame_index` of the frame-transaction frame most recently opened by
     /// `begin_frame`. Used by `exit` to tag the `FrameEntry` pushed to
     /// `self.frames` once `call_stack` empties back out.
-    current_frame_index: usize,
+    ///
+    /// `None` until `begin_frame` is first called. This distinguishes an
+    /// ordinary (non-frame) transaction's top-level call scopes -- opened
+    /// directly by a CALL/CREATE-family opcode handler with no enclosing
+    /// `begin_frame`, since `execute_frame_tx`'s loop (the only caller of
+    /// `begin_frame`) never runs for `Transaction::FrameTransaction` -- from a
+    /// real frame-transaction frame's own root scope. Without this,
+    /// `exit`'s root-close branch would tag an ordinary transaction's
+    /// top-level calls with a bogus `frameIndex: 0` and push them to
+    /// `self.frames`, contradicting this tracer's documented "no output for
+    /// a non-frame transaction" behavior (see `trace_call_erc7562`'s and
+    /// `debug_traceCall`'s doc comments).
+    current_frame_index: Option<usize>,
     keccak_preimages: std::collections::HashSet<Vec<u8>>,
     last_opcode: Option<u8>,
     /// Captures the `(opcode, target_address)` of the most recently executed
@@ -281,7 +293,7 @@ impl Erc7562FrameTracer {
         if !self.active {
             return;
         }
-        self.current_frame_index = frame_index;
+        self.current_frame_index = Some(frame_index);
     }
 
     /// Starts a call scope within the frame `begin_frame` most recently opened.
@@ -348,7 +360,7 @@ impl Erc7562FrameTracer {
         }
         if let Some(parent) = self.call_stack.last_mut() {
             parent.calls.push(frame);
-        } else {
+        } else if let Some(frame_index) = self.current_frame_index {
             // The call stack emptied back out, so this is the frame's own ROOT
             // scope closing (not a nested call). That is geth's
             // trace-finalization point, and where geth attaches the
@@ -361,10 +373,15 @@ impl Erc7562FrameTracer {
                 .collect();
             frame.keccak.sort();
             self.frames.push(FrameEntry {
-                frame_index: self.current_frame_index,
+                frame_index,
                 root: frame,
             });
         }
+        // Else: `current_frame_index` is `None`, meaning `begin_frame` was never
+        // called -- this root scope belongs to an ordinary (non-frame)
+        // transaction's top-level CALL/CREATE, not a frame-transaction frame.
+        // Drop it: `self.frames` stays empty, preserving this tracer's
+        // documented no-output behavior for non-frame transactions.
         Ok(())
     }
 

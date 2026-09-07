@@ -15,6 +15,28 @@ fn a_disabled_tracer_has_no_frames() {
     assert!(tracer.frames.is_empty());
 }
 
+/// [fix round] Regression for a bug the final whole-plan review's fix round
+/// itself introduced: once CALL/CREATE-family opcode handlers call
+/// `enter`/`exit` unconditionally (needed so nested calls within a real frame
+/// get their own scope -- see `nested_enter_nests_into_parent_call`), an
+/// ORDINARY (non-frame) transaction's top-level CALL now also opens and
+/// closes a root-level scope, with NO preceding `begin_frame` call (only
+/// `execute_frame_tx`'s loop, which never runs for a non-frame transaction,
+/// calls `begin_frame`). Before this fix, that root scope's `exit` would
+/// still push a `FrameEntry` (tagged with the type's default `frame_index`),
+/// producing spurious tracer output for a transaction that has no frames at
+/// all -- contradicting `trace_call_erc7562`'s and `debug_traceCall`'s
+/// documented "always empty for a non-frame call" behavior. An active tracer
+/// used exactly like this (an `enter`/`exit` pair with no `begin_frame` ever
+/// called) must produce zero `FrameEntry`s.
+#[test]
+fn a_call_scope_with_no_begin_frame_produces_no_frame_entry() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.exit(500, Vec::new(), None).unwrap();
+    assert!(tracer.frames.is_empty());
+}
+
 #[test]
 fn two_frames_produce_two_frame_entries() {
     let mut tracer = Erc7562FrameTracer::new();
@@ -563,6 +585,39 @@ fn extcodehash_is_recorded() {
     tracer.on_opcode(ISZERO); // even ISZERO -- suppression is EXTCODESIZE-specific
     tracer.exit(500, Vec::new(), None).unwrap();
     assert_eq!(tracer.frames[0].root.ext_code_access_info, vec![target]);
+}
+
+/// [fix round] Real geth divergence found in the final whole-plan review, same
+/// class as `on_opcode_gas_followed_by_return_is_not_counted`: `RETURN`/
+/// `REVERT` suppress a pending EXTCODE-access lookback too, via the same
+/// `handleReturnRevert`-before-`handleExtOpcodes` ordering geth applies to the
+/// GAS lookback. `suppresses_ext_lookback` covers this in `on_opcode`, but
+/// (unlike the GAS case) had shipped with no direct regression test.
+#[test]
+fn extcodehash_followed_by_return_is_not_recorded() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    let target = Address::from_low_u64_be(42);
+    tracer.on_opcode(EXTCODEHASH);
+    tracer.on_ext_opcode(EXTCODEHASH, target);
+    tracer.on_opcode(0xF3); // RETURN -- suppresses the pending EXTCODEHASH capture
+    tracer.exit(500, Vec::new(), None).unwrap();
+    assert!(tracer.frames[0].root.ext_code_access_info.is_empty());
+}
+
+/// Same as above, for `REVERT` (0xFD) rather than `RETURN`.
+#[test]
+fn extcodehash_followed_by_revert_is_not_recorded() {
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    let target = Address::from_low_u64_be(42);
+    tracer.on_opcode(EXTCODEHASH);
+    tracer.on_ext_opcode(EXTCODEHASH, target);
+    tracer.on_opcode(0xFD); // REVERT -- suppresses the pending EXTCODEHASH capture
+    tracer.exit(500, Vec::new(), None).unwrap();
+    assert!(tracer.frames[0].root.ext_code_access_info.is_empty());
 }
 
 /// `EXTCODECOPY` behaves like `EXTCODEHASH`: no suppression idiom, recorded
