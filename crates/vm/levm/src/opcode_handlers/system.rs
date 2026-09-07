@@ -220,11 +220,11 @@ impl OpcodeHandler for OpCallHandler {
         // every opcode/storage/EXTCODE access the callee performs is attributed to
         // ITS own `FrameCallTraceFrame` rather than to the enclosing frame's root.
         // Placed next to the `LevmCallTracer` call it mirrors, with the same
-        // `from`/`to` pair; `call_type`/`value` are dropped (Task 2's reduced
-        // schema carries neither). No `active` guard is needed — `enter` already
+        // `call_type`/`from`/`to`; `value` is dropped (Task 2's reduced schema
+        // carries no `value` field). No `active` guard is needed — `enter` already
         // early-returns when inactive, exactly like `LevmCallTracer::enter`.
         vm.erc7562_tracer
-            .enter(vm.current_call_frame.to, callee, &data, gas_limit);
+            .enter(CallType::CALL, vm.current_call_frame.to, callee, &data, gas_limit);
 
         // Generic call.
         vm.generic_call(
@@ -373,8 +373,13 @@ impl OpcodeHandler for OpCallCodeHandler {
         // ERC-7562/EIP-8141 frame tracer: matching nested call scope (see the CALL
         // handler's comment). `to` is `code_address`, mirroring the callTracer's
         // own choice for CALLCODE.
-        vm.erc7562_tracer
-            .enter(vm.current_call_frame.to, code_address, &data, gas_limit);
+        vm.erc7562_tracer.enter(
+            CallType::CALLCODE,
+            vm.current_call_frame.to,
+            code_address,
+            &data,
+            gas_limit,
+        );
 
         // Generic call.
         vm.generic_call(
@@ -510,8 +515,13 @@ impl OpcodeHandler for OpDelegateCallHandler {
         );
         // ERC-7562/EIP-8141 frame tracer: matching nested call scope (see the CALL
         // handler's comment).
-        vm.erc7562_tracer
-            .enter(vm.current_call_frame.to, code_address, &data, gas_limit);
+        vm.erc7562_tracer.enter(
+            CallType::DELEGATECALL,
+            vm.current_call_frame.to,
+            code_address,
+            &data,
+            gas_limit,
+        );
 
         // Generic call.
         vm.generic_call(
@@ -645,8 +655,13 @@ impl OpcodeHandler for OpStaticCallHandler {
         );
         // ERC-7562/EIP-8141 frame tracer: matching nested call scope (see the CALL
         // handler's comment).
-        vm.erc7562_tracer
-            .enter(vm.current_call_frame.to, address, &data, gas_limit);
+        vm.erc7562_tracer.enter(
+            CallType::STATICCALL,
+            vm.current_call_frame.to,
+            address,
+            &data,
+            gas_limit,
+        );
 
         // Generic call.
         vm.generic_call(
@@ -906,8 +921,13 @@ impl OpcodeHandler for OpSelfDestructHandler {
         // immediately-closed zero-gas call scope; mirror it so both tracers agree on
         // the shape of the call tree (an empty `calls` entry, no opcodes attributed
         // to it — nothing executes inside it).
-        vm.erc7562_tracer
-            .enter(vm.current_call_frame.to, beneficiary, &[], 0);
+        vm.erc7562_tracer.enter(
+            CallType::SELFDESTRUCT,
+            vm.current_call_frame.to,
+            beneficiary,
+            &[],
+            0,
+        );
         vm.erc7562_tracer.exit(0, Vec::new(), None)?;
 
         Ok(OpcodeResult::Halt)
@@ -1017,7 +1037,7 @@ impl<'a> VM<'a> {
                 // ERC-7562/EIP-8141 frame tracer: matching nested scope for the
                 // CREATE/CREATE2 early-out (see the CALL handler's comment).
                 self.erc7562_tracer
-                    .enter(deployer, new_address, &code, preview_gas);
+                    .enter(call_type, deployer, new_address, &code, preview_gas);
                 self.current_call_frame.stack.push(FAIL)?;
                 self.tracer.exit_early(0, Some(reason.to_string()))?;
                 self.erc7562_tracer
@@ -1068,7 +1088,7 @@ impl<'a> VM<'a> {
         // ERC-7562/EIP-8141 frame tracer: matching nested scope for the
         // CREATE/CREATE2 success path (see the CALL handler's comment).
         self.erc7562_tracer
-            .enter(deployer, new_address, &code, gas_limit);
+            .enter(call_type, deployer, new_address, &code, gas_limit);
 
         // Increment sender nonce (irreversible change)
         self.increment_account_nonce(deployer)?;

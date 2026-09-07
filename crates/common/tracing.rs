@@ -118,7 +118,7 @@ pub struct CallTraceFrame {
     pub logs: Vec<CallLog>,
 }
 
-#[derive(Serialize, Debug, Default)]
+#[derive(Serialize, Debug, Default, Clone, Copy)]
 pub enum CallType {
     #[default]
     CALL,

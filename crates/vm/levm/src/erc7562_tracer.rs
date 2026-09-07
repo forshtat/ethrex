@@ -13,7 +13,7 @@
 
 use crate::errors::{ContextResult, InternalError, TxResult};
 use bytes::Bytes;
-use ethrex_common::{Address, H256, types::Log};
+use ethrex_common::{Address, H256, tracing::CallType, types::Log};
 use std::collections::HashMap;
 
 // Opcode bytes used by `on_opcode`'s ignore-list/CALL-family filters below,
@@ -162,6 +162,11 @@ pub struct ContractSizeWithOpcode {
 pub struct FrameCallTraceFrame {
     pub from: Address,
     pub to: Option<Address>,
+    /// The EVM call type this scope was entered with (`CALL`, `DELEGATECALL`, `CREATE`, etc.).
+    /// Lets a consumer distinguish a `DELEGATECALL` scope (storage access happens at `from`,
+    /// the delegating caller) from every other call type (storage access happens at `to`).
+    #[serde(rename = "type")]
+    pub call_type: CallType,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub calls: Vec<FrameCallTraceFrame>,
     #[serde(rename = "accessedSlots")]
@@ -298,20 +303,22 @@ impl Erc7562FrameTracer {
 
     /// Starts a call scope within the frame `begin_frame` most recently opened.
     ///
-    /// Mirrors `LevmCallTracer::enter`'s push-onto-`call_stack` shape. `input`/
-    /// `gas` are accepted for calling-convention parity with
-    /// `LevmCallTracer::enter` (and so a future task can extend this method
-    /// without changing every call site) but are not yet stored:
-    /// `FrameCallTraceFrame` (Task 2's reduced schema, mirroring the plan's own
-    /// sketch rather than porting geth's `callFrameWithOpcodes` field-for-field)
-    /// has no `input`/`gas` fields.
-    pub fn enter(&mut self, from: Address, to: Address, _input: &[u8], _gas: u64) {
+    /// Mirrors `LevmCallTracer::enter`'s push-onto-`call_stack` shape. `call_type`
+    /// is stored on the pushed frame (see `FrameCallTraceFrame::call_type`) --
+    /// every call site passes the same `CallType` value its neighboring
+    /// `LevmCallTracer::enter` call already receives. `input`/`gas` are still
+    /// accepted for calling-convention parity with `LevmCallTracer::enter` but
+    /// are not yet stored: `FrameCallTraceFrame` (Task 2's reduced schema,
+    /// mirroring the plan's own sketch rather than porting geth's
+    /// `callFrameWithOpcodes` field-for-field) has no `input`/`gas` fields.
+    pub fn enter(&mut self, call_type: CallType, from: Address, to: Address, _input: &[u8], _gas: u64) {
         if !self.active {
             return;
         }
         self.call_stack.push(FrameCallTraceFrame {
             from,
             to: Some(to),
+            call_type,
             ..Default::default()
         });
     }

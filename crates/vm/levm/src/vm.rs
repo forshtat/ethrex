@@ -2214,6 +2214,7 @@ impl<'a> VM<'a> {
                         let synthetic_to = frame.target.unwrap_or(sender);
                         self.erc7562_tracer.begin_frame(frame_idx);
                         self.erc7562_tracer.enter(
+                            CallType::CALL,
                             synthetic_from,
                             synthetic_to,
                             &frame.data,
@@ -2317,8 +2318,13 @@ impl<'a> VM<'a> {
                 // DEFAULT/VERIFY convention below) and `frame.target` for `to`.
                 if self.erc7562_tracer.active {
                     let synthetic_to = frame.target.unwrap_or(sender);
-                    self.erc7562_tracer
-                        .enter(entry_point, synthetic_to, &frame.data, frame.gas_limit);
+                    self.erc7562_tracer.enter(
+                        CallType::CALL,
+                        entry_point,
+                        synthetic_to,
+                        &frame.data,
+                        frame.gas_limit,
+                    );
                 }
                 match crate::opcode_handlers::frame_tx::execute_utxo_frame(self, frame, frame_idx)?
                 {
@@ -2419,9 +2425,21 @@ impl<'a> VM<'a> {
             // "best-effort trace" debug RPC) would need to either close out
             // `call_stack` on every such early return or reset the tracer
             // between reused `VM` instances.
+            // Post-merge fix: `CallType::CALL` here (and at this loop's other two
+            // synthetic `enter` sites: the atomic-batch-skip short-circuit and the
+            // UTXO dispatch above) is not mirroring a sibling `LevmCallTracer::enter`
+            // call the way the CALL/CALLCODE/DELEGATECALL/STATICCALL/CREATE-family
+            // opcode handlers' `enter` calls do -- a frame-transaction frame's own
+            // root scope (DEFAULT/VERIFY/SENDER mode) is not dispatched via any real
+            // EVM CALL-family opcode, so there is no `CallType` to mirror. `CALL` is
+            // the correct semantic choice regardless: storage access performed by
+            // this frame's own code must attribute to `target` (`to`), exactly
+            // `CallType::CALL`'s convention -- never `DELEGATECALL`'s
+            // attribute-to-`from` convention, which would misattribute every
+            // ordinary frame's own storage access to `ENTRY_POINT`/`sender`.
             if self.erc7562_tracer.active {
                 self.erc7562_tracer
-                    .enter(caller, target, &frame.data, frame.gas_limit);
+                    .enter(CallType::CALL, caller, target, &frame.data, frame.gas_limit);
             }
 
             // Set env.origin for this frame (ORIGIN opcode reads this)

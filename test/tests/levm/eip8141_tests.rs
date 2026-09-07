@@ -2020,6 +2020,18 @@ fn erc7562_frame_tracer_nested_call_attribution() {
         "the nested call's `to` must be the inner contract"
     );
 
+    // Post-merge fix: the inner scope was opened by a real CALL opcode, so its
+    // `call_type` must serialize as `"CALL"` under the `"type"` key (not
+    // `"call_type"`/`"callType"`) -- the wire shape a downstream consumer's
+    // `NativeTracerReturn.type: string` field expects.
+    let inner_call_json =
+        serde_json::to_value(inner_call).expect("FrameCallTraceFrame must serialize");
+    assert_eq!(
+        inner_call_json.get("type").and_then(|v| v.as_str()),
+        Some("CALL"),
+        "the inner CALL scope's serialized \"type\" must be \"CALL\", got {inner_call_json:?}"
+    );
+
     // The load-bearing assertion: the inner contract's own SSTORE (slot 0 <- 1)
     // must be attributed to ITS OWN nested frame, not the caller's root -- this
     // is the exact misattribution Critical #2 fixed, not merely `calls` being
@@ -2037,6 +2049,59 @@ fn erc7562_frame_tracer_nested_call_attribution() {
         "the caller frame's root must NOT carry the inner call's SSTORE -- that \
          misattribution is exactly the bug Critical #2 fixed, got {:?}",
         caller_frame.accessed_slots.writes
+    );
+}
+
+/// Post-merge fix: a downstream consumer (Skandha's bundler sidecar) needs to
+/// distinguish a `DELEGATECALL` scope from an ordinary `CALL` scope in
+/// `FrameCallTraceFrame` output, to correctly attribute storage access (a
+/// `DELEGATECALL` touches the caller's storage, not the callee's). This test
+/// exercises `Erc7562FrameTracer::enter` directly (rather than through real
+/// bytecode dispatch, unlike `erc7562_frame_tracer_nested_call_attribution`
+/// above) to assert the serialized wire shape for both a `DELEGATECALL` scope
+/// and an ordinary `CALL` scope side by side: the JSON key must be `"type"`
+/// (not `"call_type"`/`"callType"`), matching `NativeTracerReturn.type` on the
+/// consumer side and geth's own native-tracer convention.
+#[test]
+fn erc7562_frame_tracer_call_type_field() {
+    use ethrex_common::tracing::CallType;
+    use ethrex_levm::erc7562_tracer::Erc7562FrameTracer;
+
+    let from = Address::repeat_byte(0xAA);
+    let to = Address::repeat_byte(0xBB);
+
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(CallType::DELEGATECALL, from, to, &[], 0);
+    tracer.exit(0, Vec::new(), None).expect("exit must succeed");
+
+    let frame_entry = tracer
+        .frames
+        .first()
+        .expect("begin_frame + enter/exit must produce one FrameEntry");
+    let json = serde_json::to_value(&frame_entry.root)
+        .expect("FrameCallTraceFrame must serialize");
+    assert_eq!(
+        json.get("type").and_then(|v| v.as_str()),
+        Some("DELEGATECALL"),
+        "a DELEGATECALL scope's serialized \"type\" must be \"DELEGATECALL\", got {json:?}"
+    );
+
+    let mut tracer = Erc7562FrameTracer::new();
+    tracer.begin_frame(0);
+    tracer.enter(CallType::CALL, from, to, &[], 0);
+    tracer.exit(0, Vec::new(), None).expect("exit must succeed");
+
+    let frame_entry = tracer
+        .frames
+        .first()
+        .expect("begin_frame + enter/exit must produce one FrameEntry");
+    let json = serde_json::to_value(&frame_entry.root)
+        .expect("FrameCallTraceFrame must serialize");
+    assert_eq!(
+        json.get("type").and_then(|v| v.as_str()),
+        Some("CALL"),
+        "an ordinary CALL scope's serialized \"type\" must be \"CALL\", got {json:?}"
     );
 }
 
