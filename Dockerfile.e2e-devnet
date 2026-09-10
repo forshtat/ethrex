@@ -1,0 +1,17 @@
+# syntax=docker/dockerfile:1.10
+#
+# EIP-8141 e2e devnet image. NOT the general-purpose ethrex image (see
+# ./Dockerfile) - this layers the two small fixture files the frame-tx e2e
+# test needs (Hegota genesis, funded dev keys) on top of the already-built
+# ethrex binary image, so a CI job can `docker run` it directly with no
+# repo checkout, cargo build, or bind mount required.
+#
+# Built from the already-published base image (see
+# .github/workflows/publish-eip8141-image.yml) rather than rebuilding the
+# Rust binary - this is a single COPY layer, seconds not minutes.
+
+ARG BASE_IMAGE=ghcr.io/forshtat/ethrex:eip8141-tracer-latest
+FROM ${BASE_IMAGE}
+
+COPY --link fixtures/genesis/l1-hegota.json /fixtures/genesis/l1-hegota.json
+COPY --link fixtures/keys/private_keys_l1.txt /fixtures/keys/private_keys_l1.txt
