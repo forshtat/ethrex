@@ -220,11 +220,10 @@ impl OpcodeHandler for OpCallHandler {
         // every opcode/storage/EXTCODE access the callee performs is attributed to
         // ITS own `FrameCallTraceFrame` rather than to the enclosing frame's root.
         // Placed next to the `LevmCallTracer` call it mirrors, with the same
-        // `call_type`/`from`/`to`; `value` is dropped (Task 2's reduced schema
-        // carries no `value` field). No `active` guard is needed — `enter` already
-        // early-returns when inactive, exactly like `LevmCallTracer::enter`.
+        // `call_type`/`from`/`to`/`value`. No `active` guard is needed — `enter`
+        // already early-returns when inactive, exactly like `LevmCallTracer::enter`.
         vm.erc7562_tracer
-            .enter(CallType::CALL, vm.current_call_frame.to, callee, &data, gas_limit);
+            .enter(CallType::CALL, vm.current_call_frame.to, callee, value, &data, gas_limit);
 
         // Generic call.
         vm.generic_call(
@@ -377,6 +376,7 @@ impl OpcodeHandler for OpCallCodeHandler {
             CallType::CALLCODE,
             vm.current_call_frame.to,
             code_address,
+            value,
             &data,
             gas_limit,
         );
@@ -519,6 +519,7 @@ impl OpcodeHandler for OpDelegateCallHandler {
             CallType::DELEGATECALL,
             vm.current_call_frame.to,
             code_address,
+            vm.current_call_frame.msg_value,
             &data,
             gas_limit,
         );
@@ -659,6 +660,7 @@ impl OpcodeHandler for OpStaticCallHandler {
             CallType::STATICCALL,
             vm.current_call_frame.to,
             address,
+            U256::zero(),
             &data,
             gas_limit,
         );
@@ -925,6 +927,7 @@ impl OpcodeHandler for OpSelfDestructHandler {
             CallType::SELFDESTRUCT,
             vm.current_call_frame.to,
             beneficiary,
+            balance,
             &[],
             0,
         );
@@ -1037,7 +1040,7 @@ impl<'a> VM<'a> {
                 // ERC-7562/EIP-8141 frame tracer: matching nested scope for the
                 // CREATE/CREATE2 early-out (see the CALL handler's comment).
                 self.erc7562_tracer
-                    .enter(call_type, deployer, new_address, &code, preview_gas);
+                    .enter(call_type, deployer, new_address, value, &code, preview_gas);
                 self.current_call_frame.stack.push(FAIL)?;
                 self.tracer.exit_early(0, Some(reason.to_string()))?;
                 self.erc7562_tracer
@@ -1088,7 +1091,7 @@ impl<'a> VM<'a> {
         // ERC-7562/EIP-8141 frame tracer: matching nested scope for the
         // CREATE/CREATE2 success path (see the CALL handler's comment).
         self.erc7562_tracer
-            .enter(call_type, deployer, new_address, &code, gas_limit);
+            .enter(call_type, deployer, new_address, value, &code, gas_limit);
 
         // Increment sender nonce (irreversible change)
         self.increment_account_nonce(deployer)?;

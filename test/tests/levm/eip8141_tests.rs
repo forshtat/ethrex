@@ -2072,7 +2072,7 @@ fn erc7562_frame_tracer_call_type_field() {
 
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::DELEGATECALL, from, to, &[], 0);
+    tracer.enter(CallType::DELEGATECALL, from, to, U256::zero(), &[], 0);
     tracer.exit(0, Vec::new(), None).expect("exit must succeed");
 
     let frame_entry = tracer
@@ -2089,7 +2089,7 @@ fn erc7562_frame_tracer_call_type_field() {
 
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, from, to, &[], 0);
+    tracer.enter(CallType::CALL, from, to, U256::zero(), &[], 0);
     tracer.exit(0, Vec::new(), None).expect("exit must succeed");
 
     let frame_entry = tracer

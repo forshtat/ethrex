@@ -13,7 +13,7 @@
 
 use crate::errors::{ContextResult, InternalError, TxResult};
 use bytes::Bytes;
-use ethrex_common::{Address, H256, tracing::CallType, types::Log};
+use ethrex_common::{Address, H256, U256, tracing::CallType, types::Log};
 use std::collections::HashMap;
 
 // Opcode bytes used by `on_opcode`'s ignore-list/CALL-family filters below,
@@ -167,6 +167,18 @@ pub struct FrameCallTraceFrame {
     /// the delegating caller) from every other call type (storage access happens at `to`).
     #[serde(rename = "type")]
     pub call_type: CallType,
+    /// Value transferred by the `CALL`-family opcode that opened this scope
+    /// (`ethereum-types`' native hex-string `Serialize`, matching
+    /// `ethrex_common::tracing::CallTraceFrame::value`'s own wire format).
+    /// Zero for a scope that is not a real EVM `CALL`-family opcode
+    /// invocation - `STATICCALL` (which cannot carry value), and every
+    /// frame-transaction frame's own root scope (opened once per frame by
+    /// `vm.rs`'s per-frame dispatch loop, not by a `CALL` opcode: a frame's
+    /// own declared `value` is a structural part of the frame transaction
+    /// itself, already known to any caller without tracing, and is a
+    /// different concept from ERC-7562's `[OP-061]` "no nested `CALL` with
+    /// value" rule this field exists to let a consumer enforce).
+    pub value: U256,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub calls: Vec<FrameCallTraceFrame>,
     #[serde(rename = "accessedSlots")]
@@ -304,14 +316,26 @@ impl Erc7562FrameTracer {
     /// Starts a call scope within the frame `begin_frame` most recently opened.
     ///
     /// Mirrors `LevmCallTracer::enter`'s push-onto-`call_stack` shape. `call_type`
-    /// is stored on the pushed frame (see `FrameCallTraceFrame::call_type`) --
-    /// every call site passes the same `CallType` value its neighboring
-    /// `LevmCallTracer::enter` call already receives. `input`/`gas` are still
+    /// and `value` are stored on the pushed frame (see `FrameCallTraceFrame::call_type`/
+    /// `::value`) -- every real `CALL`-family opcode call site passes the same
+    /// `CallType`/`value` its neighboring `LevmCallTracer::enter` call already
+    /// receives. The three frame-root call sites (`vm.rs`'s per-frame dispatch
+    /// loop) pass `U256::zero()`: a frame's own root scope is not opened by a
+    /// `CALL` opcode, so it has no such value to report (see
+    /// `FrameCallTraceFrame::value`'s doc comment). `input`/`gas` are still
     /// accepted for calling-convention parity with `LevmCallTracer::enter` but
-    /// are not yet stored: `FrameCallTraceFrame` (Task 2's reduced schema,
-    /// mirroring the plan's own sketch rather than porting geth's
-    /// `callFrameWithOpcodes` field-for-field) has no `input`/`gas` fields.
-    pub fn enter(&mut self, call_type: CallType, from: Address, to: Address, _input: &[u8], _gas: u64) {
+    /// are not yet stored: `FrameCallTraceFrame` (a reduced schema, mirroring
+    /// the plan's own sketch rather than porting geth's `callFrameWithOpcodes`
+    /// field-for-field) has no `input`/`gas` fields.
+    pub fn enter(
+        &mut self,
+        call_type: CallType,
+        from: Address,
+        to: Address,
+        value: U256,
+        _input: &[u8],
+        _gas: u64,
+    ) {
         if !self.active {
             return;
         }
@@ -319,6 +343,7 @@ impl Erc7562FrameTracer {
             from,
             to: Some(to),
             call_type,
+            value,
             ..Default::default()
         });
     }

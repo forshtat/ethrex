@@ -2217,6 +2217,7 @@ impl<'a> VM<'a> {
                             CallType::CALL,
                             synthetic_from,
                             synthetic_to,
+                            U256::zero(),
                             &frame.data,
                             frame.gas_limit,
                         );
@@ -2322,6 +2323,7 @@ impl<'a> VM<'a> {
                         CallType::CALL,
                         entry_point,
                         synthetic_to,
+                        U256::zero(),
                         &frame.data,
                         frame.gas_limit,
                     );
@@ -2438,8 +2440,14 @@ impl<'a> VM<'a> {
             // attribute-to-`from` convention, which would misattribute every
             // ordinary frame's own storage access to `ENTRY_POINT`/`sender`.
             if self.erc7562_tracer.active {
-                self.erc7562_tracer
-                    .enter(CallType::CALL, caller, target, &frame.data, frame.gas_limit);
+                self.erc7562_tracer.enter(
+                    CallType::CALL,
+                    caller,
+                    target,
+                    U256::zero(),
+                    &frame.data,
+                    frame.gas_limit,
+                );
             }
 
             // Set env.origin for this frame (ORIGIN opcode reads this)

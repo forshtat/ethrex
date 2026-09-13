@@ -4,7 +4,7 @@
 //! shape and the `begin_frame`/`enter`/`exit` push/pop-and-nest control flow
 //! wired into `execute_frame_tx`'s frame loop.
 
-use ethrex_common::{Address, H256, tracing::CallType};
+use ethrex_common::{Address, H256, U256, tracing::CallType};
 use ethrex_levm::erc7562_tracer::Erc7562FrameTracer;
 use ethrex_levm::errors::{ExceptionalHalt, VMError};
 
@@ -32,7 +32,7 @@ fn a_disabled_tracer_has_no_frames() {
 #[test]
 fn a_call_scope_with_no_begin_frame_produces_no_frame_entry() {
     let mut tracer = Erc7562FrameTracer::new();
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     tracer.exit(500, Vec::new(), None).unwrap();
     assert!(tracer.frames.is_empty());
 }
@@ -41,10 +41,10 @@ fn a_call_scope_with_no_begin_frame_produces_no_frame_entry() {
 fn two_frames_produce_two_frame_entries() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     tracer.exit(500, Vec::new(), None).unwrap();
     tracer.begin_frame(1);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(2), &[], 2000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(2), U256::zero(), &[], 2000);
     tracer.exit(1500, Vec::new(), None).unwrap();
     assert_eq!(tracer.frames.len(), 2);
     assert_eq!(tracer.frames[0].frame_index, 0);
@@ -57,11 +57,12 @@ fn two_frames_produce_two_frame_entries() {
 fn nested_enter_nests_into_parent_call() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     tracer.enter(
         CallType::CALL,
         Address::from_low_u64_be(1),
         Address::from_low_u64_be(2),
+        U256::zero(),
         &[],
         400,
     );
@@ -87,7 +88,7 @@ fn nested_enter_nests_into_parent_call() {
 fn exit_with_real_out_of_gas_error_sets_out_of_gas_flag() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     let err = format!("{}", VMError::ExceptionalHalt(ExceptionalHalt::OutOfGas));
     // Sanity-check the premise the whole test rests on: the real Display
     // output is title-cased, not the lowercase literal the old test used.
@@ -102,7 +103,7 @@ fn exit_with_real_out_of_gas_error_sets_out_of_gas_flag() {
 fn exit_with_unrelated_error_does_not_set_out_of_gas_flag() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     let err = format!(
         "{}",
         VMError::ExceptionalHalt(ExceptionalHalt::StackOverflow)
@@ -119,7 +120,7 @@ fn exit_with_unrelated_error_does_not_set_out_of_gas_flag() {
 fn exit_with_lowercase_insufficient_gas_literal_sets_out_of_gas_flag() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     tracer
         .exit(
             0,
@@ -139,7 +140,7 @@ fn exit_with_lowercase_insufficient_gas_literal_sets_out_of_gas_flag() {
 fn on_opcode_counts_non_ignored_opcodes() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     tracer.on_opcode(0x54); // SLOAD
     tracer.on_opcode(0x54); // SLOAD again
     tracer.on_opcode(0x01); // ADD -- ignored, per default filter
@@ -155,7 +156,7 @@ fn on_opcode_counts_non_ignored_opcodes() {
 fn on_opcode_ignores_push_dup_swap_range_endpoints() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     tracer.on_opcode(0x5F); // PUSH0
     tracer.on_opcode(0x9F); // SWAP16
     tracer.exit(500, Vec::new(), None).unwrap();
@@ -172,7 +173,7 @@ fn on_opcode_ignores_push_dup_swap_range_endpoints() {
 fn on_opcode_gas_followed_by_call_is_not_counted() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     tracer.on_opcode(0x5A); // GAS
     tracer.on_opcode(0xF1); // CALL
     tracer.exit(500, Vec::new(), None).unwrap();
@@ -188,7 +189,7 @@ fn on_opcode_gas_followed_by_call_is_not_counted() {
 fn on_opcode_gas_followed_by_non_call_is_counted() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     tracer.on_opcode(0x5A); // GAS
     tracer.on_opcode(0x01); // ADD -- not a call, so the preceding GAS counts
     tracer.exit(500, Vec::new(), None).unwrap();
@@ -206,7 +207,7 @@ fn on_opcode_gas_suppressed_before_every_call_family_opcode() {
     for call_opcode in [0xF1u8, 0xF2, 0xF4, 0xFA] {
         let mut tracer = Erc7562FrameTracer::new();
         tracer.begin_frame(0);
-        tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+        tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
         tracer.on_opcode(0x5A); // GAS
         tracer.on_opcode(call_opcode);
         tracer.exit(500, Vec::new(), None).unwrap();
@@ -227,7 +228,7 @@ fn on_opcode_gas_before_create_is_counted() {
     for create_opcode in [0xF0u8, 0xF5] {
         let mut tracer = Erc7562FrameTracer::new();
         tracer.begin_frame(0);
-        tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+        tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
         tracer.on_opcode(0x5A); // GAS
         tracer.on_opcode(create_opcode); // CREATE / CREATE2
         tracer.exit(500, Vec::new(), None).unwrap();
@@ -248,7 +249,7 @@ fn on_opcode_gas_before_create_is_counted() {
 fn on_opcode_trailing_gas_with_no_following_opcode_is_not_counted() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     tracer.on_opcode(0x5A); // GAS, then the frame ends
     tracer.exit(500, Vec::new(), None).unwrap();
     let used = &tracer.frames[0].root.used_opcodes;
@@ -268,7 +269,7 @@ fn on_opcode_trailing_gas_with_no_following_opcode_is_not_counted() {
 fn on_opcode_gas_followed_by_return_is_not_counted() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     tracer.on_opcode(0x5A); // GAS
     tracer.on_opcode(0xF3); // RETURN
     tracer.exit(500, Vec::new(), None).unwrap();
@@ -281,7 +282,7 @@ fn on_opcode_gas_followed_by_return_is_not_counted() {
 fn on_opcode_gas_followed_by_revert_is_not_counted() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     tracer.on_opcode(0x5A); // GAS
     tracer.on_opcode(0xFD); // REVERT
     tracer.exit(500, Vec::new(), None).unwrap();
@@ -358,7 +359,7 @@ fn on_opcode_ignores_all_16_named_arithmetic_comparison_opcodes() {
     for opcode in IGNORED_NAMED_OPCODES {
         let mut tracer = Erc7562FrameTracer::new();
         tracer.begin_frame(0);
-        tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+        tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
         tracer.on_opcode(opcode);
         tracer.exit(500, Vec::new(), None).unwrap();
         let used = &tracer.frames[0].root.used_opcodes;
@@ -385,7 +386,7 @@ const TSTORE: u8 = 0x5D;
 fn first_sload_records_original_value_second_does_not_overwrite() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     let slot = H256::from_low_u64_be(7);
     tracer.on_storage_access(SLOAD, slot, Address::from_low_u64_be(1), || {
         H256::from_low_u64_be(100)
@@ -406,7 +407,7 @@ fn first_sload_records_original_value_second_does_not_overwrite() {
 fn sload_after_sstore_does_not_record_original_value() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     let slot = H256::from_low_u64_be(7);
     let addr = Address::from_low_u64_be(1);
     tracer.on_storage_access(SSTORE, slot, addr, H256::zero);
@@ -426,7 +427,7 @@ fn sload_after_sstore_does_not_record_original_value() {
 fn sstore_increments_write_counter_every_touch() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     let slot = H256::from_low_u64_be(3);
     let addr = Address::from_low_u64_be(1);
     tracer.on_storage_access(SSTORE, slot, addr, H256::zero);
@@ -444,7 +445,7 @@ fn sstore_increments_write_counter_every_touch() {
 fn tload_increments_transient_read_counter_every_touch_no_guard() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     let slot = H256::from_low_u64_be(9);
     let addr = Address::from_low_u64_be(1);
     tracer.on_storage_access(TLOAD, slot, addr, || H256::from_low_u64_be(111));
@@ -461,7 +462,7 @@ fn tload_increments_transient_read_counter_every_touch_no_guard() {
 fn tstore_increments_transient_write_counter_every_touch_no_guard() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     let slot = H256::from_low_u64_be(11);
     let addr = Address::from_low_u64_be(1);
     tracer.on_storage_access(TSTORE, slot, addr, H256::zero);
@@ -483,7 +484,7 @@ fn tstore_increments_transient_write_counter_every_touch_no_guard() {
 fn storage_and_transient_accesses_use_independent_counters() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     let slot = H256::from_low_u64_be(42);
     let addr = Address::from_low_u64_be(1);
     tracer.on_storage_access(SLOAD, slot, addr, || H256::from_low_u64_be(1));
@@ -504,7 +505,7 @@ fn storage_and_transient_accesses_use_independent_counters() {
 fn on_storage_access_is_a_noop_when_disabled() {
     let mut tracer = Erc7562FrameTracer::disabled();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     let slot = H256::from_low_u64_be(1);
     let addr = Address::from_low_u64_be(1);
     tracer.on_storage_access(SLOAD, slot, addr, || H256::from_low_u64_be(1));
@@ -547,7 +548,7 @@ const ADD: u8 = 0x01;
 fn extcodesize_immediately_followed_by_iszero_is_not_recorded() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     let target = Address::from_low_u64_be(42);
     tracer.on_opcode(EXTCODESIZE); // dispatch loop's per-instruction hook
     tracer.on_ext_opcode(EXTCODESIZE, target); // handler captures its own target
@@ -563,7 +564,7 @@ fn extcodesize_immediately_followed_by_iszero_is_not_recorded() {
 fn extcodesize_followed_by_non_iszero_is_recorded() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     let target = Address::from_low_u64_be(42);
     tracer.on_opcode(EXTCODESIZE);
     tracer.on_ext_opcode(EXTCODESIZE, target);
@@ -579,7 +580,7 @@ fn extcodesize_followed_by_non_iszero_is_recorded() {
 fn extcodehash_is_recorded() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     let target = Address::from_low_u64_be(42);
     tracer.on_opcode(EXTCODEHASH);
     tracer.on_ext_opcode(EXTCODEHASH, target);
@@ -598,7 +599,7 @@ fn extcodehash_is_recorded() {
 fn extcodehash_followed_by_return_is_not_recorded() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     let target = Address::from_low_u64_be(42);
     tracer.on_opcode(EXTCODEHASH);
     tracer.on_ext_opcode(EXTCODEHASH, target);
@@ -612,7 +613,7 @@ fn extcodehash_followed_by_return_is_not_recorded() {
 fn extcodehash_followed_by_revert_is_not_recorded() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     let target = Address::from_low_u64_be(42);
     tracer.on_opcode(EXTCODEHASH);
     tracer.on_ext_opcode(EXTCODEHASH, target);
@@ -627,7 +628,7 @@ fn extcodehash_followed_by_revert_is_not_recorded() {
 fn extcodecopy_is_recorded() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     let target = Address::from_low_u64_be(42);
     tracer.on_opcode(EXTCODECOPY);
     tracer.on_ext_opcode(EXTCODECOPY, target);
@@ -645,7 +646,7 @@ fn extcodecopy_is_recorded() {
 fn trailing_ext_opcode_with_no_following_opcode_is_not_recorded() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     let target = Address::from_low_u64_be(42);
     tracer.on_opcode(EXTCODEHASH);
     tracer.on_ext_opcode(EXTCODEHASH, target); // frame ends before any next on_opcode
@@ -660,7 +661,7 @@ fn trailing_ext_opcode_with_no_following_opcode_is_not_recorded() {
 fn ext_access_capture_is_consumed_only_once() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     let first = Address::from_low_u64_be(1);
     let second = Address::from_low_u64_be(2);
     tracer.on_opcode(EXTCODEHASH);
@@ -679,7 +680,7 @@ fn ext_access_capture_is_consumed_only_once() {
 fn on_ext_opcode_is_a_noop_when_disabled() {
     let mut tracer = Erc7562FrameTracer::disabled();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     tracer.on_opcode(EXTCODESIZE);
     tracer.on_ext_opcode(EXTCODESIZE, Address::from_low_u64_be(42));
     tracer.on_opcode(ADD);
@@ -699,7 +700,7 @@ const CALL: u8 = 0xF1;
 fn contract_size_recorded_on_first_access() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     let target = Address::from_low_u64_be(7);
     tracer.on_contract_size_access(EXTCODESIZE, target, || 123);
     tracer.exit(500, Vec::new(), None).unwrap();
@@ -716,7 +717,7 @@ fn contract_size_recorded_on_first_access() {
 fn contract_size_second_access_does_not_overwrite() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     let target = Address::from_low_u64_be(7);
     tracer.on_contract_size_access(EXTCODESIZE, target, || 123);
     tracer.on_contract_size_access(CALL, target, || 999);
@@ -735,7 +736,7 @@ fn contract_size_second_access_does_not_overwrite() {
 fn contract_size_closure_not_invoked_on_repeat_access() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     let target = Address::from_low_u64_be(7);
     tracer.on_contract_size_access(EXTCODESIZE, target, || 123);
     tracer.on_contract_size_access(CALL, target, || panic!("must not be called"));
@@ -751,7 +752,7 @@ fn contract_size_closure_not_invoked_on_repeat_access() {
 fn contract_size_tracks_multiple_addresses_independently() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     let a = Address::from_low_u64_be(1);
     let b = Address::from_low_u64_be(2);
     tracer.on_contract_size_access(EXTCODESIZE, a, || 10);
@@ -767,7 +768,7 @@ fn contract_size_tracks_multiple_addresses_independently() {
 fn on_contract_size_access_is_a_noop_when_disabled() {
     let mut tracer = Erc7562FrameTracer::disabled();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     tracer.on_contract_size_access(EXTCODESIZE, Address::from_low_u64_be(7), || {
         panic!("must not be called when disabled")
     });
@@ -786,7 +787,7 @@ fn on_contract_size_access_is_a_noop_when_disabled() {
 fn keccak_preimage_is_recorded() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     tracer.on_keccak(b"hello".to_vec());
     tracer.exit(500, Vec::new(), None).unwrap();
     assert!(tracer.keccak_preimages().contains(&b"hello".to_vec()));
@@ -798,7 +799,7 @@ fn keccak_preimage_is_recorded() {
 fn keccak_empty_preimage_is_recorded() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     tracer.on_keccak(Vec::new());
     tracer.exit(500, Vec::new(), None).unwrap();
     assert!(tracer.keccak_preimages().contains(&Vec::<u8>::new()));
@@ -812,12 +813,13 @@ fn keccak_empty_preimage_is_recorded() {
 fn keccak_preimages_are_shared_across_call_frames() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     tracer.on_keccak(b"outer".to_vec());
     tracer.enter(
         CallType::CALL,
         Address::from_low_u64_be(1),
         Address::from_low_u64_be(2),
+        U256::zero(),
         &[],
         400,
     );
@@ -836,11 +838,11 @@ fn keccak_preimages_are_shared_across_call_frames() {
 fn keccak_preimages_persist_across_frame_transaction_frames() {
     let mut tracer = Erc7562FrameTracer::new();
     tracer.begin_frame(0);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(1), U256::zero(), &[], 1000);
     tracer.on_keccak(b"frame-zero".to_vec());
     tracer.exit(500, Vec::new(), None).unwrap();
     tracer.begin_frame(1);
-    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(2), &[], 1000);
+    tracer.enter(CallType::CALL, Address::zero(), Address::from_low_u64_be(2), U256::zero(), &[], 1000);
     tracer.on_keccak(b"frame-one".to_vec());
     tracer.exit(500, Vec::new(), None).unwrap();
     let preimages = tracer.keccak_preimages();
