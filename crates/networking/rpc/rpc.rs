@@ -1487,6 +1487,10 @@ pub async fn map_debug_requests(req: &RpcRequest, context: RpcApiContext) -> Res
 /// namespaces (kept separate so operators can expose them publicly without
 /// enabling all of `debug_`):
 /// - Frame transactions (EIP-8141): `ethrex_simulateFrameTransaction`
+/// - Demo-grade privileged submission (EIP-8141): `ethrex_submitPrivilegedFrameTransaction`
+///   — fully unauthenticated, MUST NOT be exposed on anything but a trusted
+///   deployment; see `crate::ethrex::SubmitPrivilegedFrameTransactionRequest`'s
+///   own doc comment.
 pub async fn map_ethrex_requests(
     req: &RpcRequest,
     context: RpcApiContext,
@@ -1494,6 +1498,9 @@ pub async fn map_ethrex_requests(
     match req.method.as_str() {
         "ethrex_simulateFrameTransaction" => {
             crate::ethrex::SimulateFrameTransactionRequest::call(req, context).await
+        }
+        "ethrex_submitPrivilegedFrameTransaction" => {
+            crate::ethrex::SubmitPrivilegedFrameTransactionRequest::call(req, context).await
         }
         unknown_ethrex_method => Err(RpcErr::MethodNotFound(unknown_ethrex_method.to_owned())),
     }

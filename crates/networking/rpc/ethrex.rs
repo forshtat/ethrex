@@ -536,3 +536,70 @@ fn to_hex_u256(value: U256) -> String {
 fn to_value(result: SimulateFrameTransactionResult) -> Result<Value, RpcErr> {
     serde_json::to_value(result).map_err(|error| RpcErr::Internal(error.to_string()))
 }
+
+/// `ethrex_submitPrivilegedFrameTransaction` — a demo-grade, fully
+/// unauthenticated fast path for a trusted, localhost-only caller (an
+/// EIP-8141 frame-transaction sidecar that has already run its own full
+/// ERC-7562-derived admission checks) to force a frame transaction into the
+/// very next payload build, bypassing the mempool's `validate_transaction`
+/// admission pipeline entirely.
+///
+/// This is NOT a substitute for `eth_sendRawTransaction`/the normal
+/// mempool: there is no fee-competitiveness check, no paymaster-reservation
+/// accounting, no expiry-deadline check, and no spam protection of any
+/// kind. There is also no retry across blocks: a transaction not caught by
+/// the very next payload build is simply dropped — see
+/// `Blockchain::push_privileged_transaction`'s own doc comment for why that
+/// is the entire mechanism behind "current block only", not a bug to fix
+/// later. MUST NOT be exposed on anything but a trusted deployment where
+/// the caller is known to have already validated the transaction itself.
+#[derive(Debug)]
+pub struct SubmitPrivilegedFrameTransactionRequest {
+    /// Decoded type-`0x06` frame transaction (validated in `parse`).
+    pub transaction: Transaction,
+}
+
+impl RpcHandler for SubmitPrivilegedFrameTransactionRequest {
+    fn parse(params: &Option<Vec<Value>>) -> Result<Self, RpcErr> {
+        let params = params
+            .as_ref()
+            .ok_or(RpcErr::BadParams("No params provided".to_owned()))?;
+        if params.len() != 1 {
+            return Err(RpcErr::BadParams(format!(
+                "Expected one param and {} were provided",
+                params.len()
+            )));
+        }
+
+        let raw: String = serde_json::from_value(params[0].clone())
+            .map_err(|error| RpcErr::BadParams(error.to_string()))?;
+        let raw = raw
+            .strip_prefix("0x")
+            .ok_or_else(|| RpcErr::BadParams("rawTx is not 0x-prefixed".to_owned()))?;
+        let bytes = hex::decode(raw).map_err(|error| RpcErr::BadParams(error.to_string()))?;
+
+        let transaction = Transaction::decode_canonical(&bytes)
+            .map_err(|error| RpcErr::BadParams(error.to_string()))?;
+        if !matches!(transaction, Transaction::FrameTransaction(_)) {
+            return Err(RpcErr::BadParams(
+                "rawTx is not a type-0x06 frame transaction".to_owned(),
+            ));
+        }
+
+        Ok(SubmitPrivilegedFrameTransactionRequest { transaction })
+    }
+
+    async fn handle(&self, context: RpcApiContext) -> Result<Value, RpcErr> {
+        // No validation of any kind is performed here, deliberately - see this
+        // struct's own doc comment. The hash is computed the same way
+        // `eth_sendRawTransaction` computes it, so a caller correlating
+        // hashes across both methods sees the same value regardless of
+        // which one it used.
+        let hash = self.transaction.hash(&NativeCrypto);
+        context
+            .blockchain
+            .push_privileged_transaction(self.transaction.clone());
+        serde_json::to_value(format!("{hash:#x}"))
+            .map_err(|error| RpcErr::Internal(error.to_string()))
+    }
+}

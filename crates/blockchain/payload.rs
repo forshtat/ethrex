@@ -625,6 +625,21 @@ impl Blockchain {
         context.explicit_build = explicit_transactions.is_some();
         match explicit_transactions {
             None => {
+                // EIP-8141 demo-grade privileged submission: drained once per
+                // payload build, applied the exact same "blindly trust, try to
+                // apply, silently skip on failure" way EIP-7805 (FOCIL)
+                // inclusion-list transactions are, immediately below. Ahead of
+                // the real inclusion list on the reasoning that a privileged
+                // submission is this node's own bundler explicitly asking for
+                // inclusion right now, not a consensus-layer-supplied list this
+                // node merely has to satisfy. See
+                // `Blockchain::push_privileged_transaction`'s doc comment for
+                // why nothing here is retried across builds.
+                let privileged_txs = self.drain_privileged_transactions();
+                if !privileged_txs.is_empty() {
+                    self.apply_inclusion_list_transactions(&mut context, &privileged_txs)?;
+                }
+
                 // EIP-7805 (FOCIL): IL-first sequencing per Decision 5 in design.md.
                 // When an inclusion list is present, attempt each IL transaction in
                 // arrival order before the priority-fee-ordered mempool fill phase

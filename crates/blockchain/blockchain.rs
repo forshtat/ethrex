@@ -258,6 +258,22 @@ pub struct Blockchain {
     /// Cache handoff slot from the mempool prewarmer to
     /// `execute_block_pipeline`; see `PrewarmedCache` and `crate::prewarm`.
     prewarmed: PrewarmedCache,
+    /// EIP-8141 demo-grade "privileged submission" queue. Frame transactions
+    /// pushed here (by `ethrex_submitPrivilegedFrameTransaction`) bypass the
+    /// normal mempool's `validate_transaction` admission pipeline entirely -
+    /// there is no fee-competitiveness check, no paymaster-reservation
+    /// accounting, no expiry-deadline check, nothing. Drained once per
+    /// payload build (`build_payload_inner`) and applied the same way
+    /// EIP-7805 (FOCIL) inclusion-list transactions already are: tried
+    /// directly against the accumulating block state, silently skipped if
+    /// they don't apply. Never retried across builds - a transaction not
+    /// caught by the very next payload build is simply gone, by design
+    /// ("current block only"). The RPC method that feeds this is
+    /// unauthenticated and un-rate-limited: it MUST NOT be exposed on
+    /// anything but a trusted, localhost-only deployment where the calling
+    /// frame-transaction sidecar has already run its own full
+    /// ERC-7562-derived admission checks before calling it.
+    privileged_frame_txs: std::sync::Mutex<Vec<Transaction>>,
 }
 
 /// Newtype around the prewarmer's cache-handoff slot so `Blockchain` can keep
@@ -544,6 +560,7 @@ impl Blockchain {
             options: blockchain_opts,
             merkle_pool: Self::build_merkle_pool(),
             prewarmed: PrewarmedCache::default(),
+            privileged_frame_txs: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -566,6 +583,7 @@ impl Blockchain {
             options: BlockchainOptions::default(),
             merkle_pool: pool,
             prewarmed: PrewarmedCache::default(),
+            privileged_frame_txs: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -579,6 +597,7 @@ impl Blockchain {
             options: BlockchainOptions::default(),
             merkle_pool: Self::build_merkle_pool(),
             prewarmed: PrewarmedCache::default(),
+            privileged_frame_txs: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -606,6 +625,34 @@ impl Blockchain {
     /// orchestrator to drive the storage-side primitives.
     pub fn store(&self) -> &Store {
         &self.storage
+    }
+
+    /// Queues a frame transaction for privileged, no-questions-asked
+    /// inclusion in the very next payload build - see
+    /// `privileged_frame_txs`'s own doc comment for what "privileged" means
+    /// here (no admission checks at all) and why that's acceptable (a
+    /// trusted, localhost-only caller already ran its own checks).
+    ///
+    /// A poisoned lock (a prior panic while some other thread held it) drops
+    /// the submission silently rather than panicking this thread too -
+    /// consistent with `PrewarmedCache`'s own best-effort handling of the
+    /// same `std::sync::Mutex` failure mode elsewhere in this file.
+    pub fn push_privileged_transaction(&self, tx: Transaction) {
+        if let Ok(mut queue) = self.privileged_frame_txs.lock() {
+            queue.push(tx);
+        }
+    }
+
+    /// Takes and clears the privileged-submission queue. Called once per
+    /// payload build (`build_payload_inner`) - whatever is not drained here
+    /// simply never gets a second attempt, which is the entire mechanism
+    /// behind "current block only". A poisoned lock is treated as an empty
+    /// queue, same reasoning as `push_privileged_transaction`.
+    fn drain_privileged_transactions(&self) -> Vec<Transaction> {
+        match self.privileged_frame_txs.lock() {
+            Ok(mut queue) => std::mem::take(&mut *queue),
+            Err(_) => Vec::new(),
+        }
     }
 
     /// Returns `true` while a deep-reorg apply pass is in flight. Set by
