@@ -368,11 +368,6 @@ impl LEVM {
                 block_gas_used = block_gas_used.saturating_add(report.gas_used);
             }
 
-            ::tracing::debug!(
-                "RECEIPT-DEBUG tx_idx={tx_idx} tx_type={:?} result={:?}",
-                tx.tx_type(),
-                report.result,
-            );
             let mut receipt = Receipt::new(
                 tx.tx_type(),
                 matches!(report.result, TxResult::Success),
@@ -828,11 +823,6 @@ impl LEVM {
                 block_gas_used = block_gas_used.saturating_add(report.gas_used);
             }
 
-            ::tracing::debug!(
-                "RECEIPT-DEBUG tx_idx={tx_idx} tx_type={:?} result={:?}",
-                tx.tx_type(),
-                report.result,
-            );
             let mut receipt = Receipt::new(
                 tx.tx_type(),
                 matches!(report.result, TxResult::Success),
@@ -1567,11 +1557,6 @@ impl LEVM {
         let mut cumulative_gas_used = 0_u64;
         for (_, tx_type, report, _, _, _, _) in exec_results {
             cumulative_gas_used += report.gas_spent;
-            ::tracing::debug!(
-                "RECEIPT-DEBUG execute_block_parallel tx_type={:?} result={:?}",
-                tx_type,
-                report.result,
-            );
             let mut receipt = Receipt::new(
                 tx_type,
                 matches!(report.result, TxResult::Success),
