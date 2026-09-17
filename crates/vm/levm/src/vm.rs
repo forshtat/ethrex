@@ -1709,6 +1709,7 @@ impl<'a> VM<'a> {
         // The BAL checkpoint below is intentionally skipped: a codeless transfer cannot
         // fail past this point and has no inner calls, so there's nothing to roll back.
         if self.is_simple_transfer_fast_path() {
+            eprintln!("RECEIPT-DEBUG took is_simple_transfer_fast_path, to={:?}", self.current_call_frame.to);
             // EIP-8037: no `refill_frame_state_gas` needed here — a codeless transfer always
             // succeeds, runs no opcodes, and charges no execution state gas, so the frame's
             // `frame_state_gas_spilled` is 0 and `state_gas_used` equals its entry baseline.
@@ -1725,6 +1726,12 @@ impl<'a> VM<'a> {
                 output: Bytes::new(),
             };
             return self.finalize_execution(context_result);
+        } else {
+            eprintln!("RECEIPT-DEBUG did NOT take fast path, to={:?} is_create={} bytecode_empty={} gas_remaining={}",
+                self.current_call_frame.to,
+                self.current_call_frame.is_create,
+                self.current_call_frame.bytecode.is_empty(),
+                self.current_call_frame.gas_remaining);
         }
 
         // EIP-7928: Take a BAL checkpoint AFTER clearing the backup. This captures the state
@@ -4456,11 +4463,13 @@ impl<'a> VM<'a> {
         // collision — matching EELS v7, which drops the created-target-alive output flag
         // entirely because `prepare_dispatch` never runs for a colliding create.
 
+        eprintln!("RECEIPT-DEBUG finalize_execution ENTRY result={:?} hooks_len={}", ctx_result.result, self.hooks.len());
         // See `prepare_execution`: per-hook `Rc::clone` avoids the `self.hooks.clone()` realloc.
         for i in 0..self.hooks.len() {
             if let Some(hook) = self.hooks.get(i).map(Rc::clone) {
                 hook.borrow_mut()
                     .finalize_execution(self, &mut ctx_result)?;
+                eprintln!("RECEIPT-DEBUG finalize_execution after hook[{i}] result={:?}", ctx_result.result);
             }
         }
 
