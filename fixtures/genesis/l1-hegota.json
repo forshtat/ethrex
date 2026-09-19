@@ -1288,6 +1288,12 @@
       "storage": {
         "0x0000000000000000000000000000000000000000000000000000000000000000": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
       }
+    },
+    "0x00000000000000000000000000000000badc0de1": {
+      "code": "0x42600360006000aa",
+      "storage": {},
+      "balance": "0x3e8",
+      "nonce": "0x1"
     }
   }
 }
