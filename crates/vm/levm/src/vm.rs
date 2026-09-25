@@ -25,7 +25,7 @@ use crate::{
         self, SIZE_PRECOMPILES_CANCUN, SIZE_PRECOMPILES_PRAGUE, SIZE_PRECOMPILES_PRE_CANCUN,
     },
     tracing::LevmCallTracer,
-    validation_observer::ValidationObserver,
+    validation_observer::{ApproveRejection, ValidationObserver},
 };
 use bytes::Bytes;
 use ethrex_common::{
@@ -594,6 +594,45 @@ pub struct PrepareRegionBackupMarker {
     bal_checkpoint: Option<BlockAccessListCheckpoint>,
 }
 
+/// Why a validation-prefix frame failed (EIP-8141 mempool simulation). The
+/// simulator otherwise reduces every failure to "a frame reverted"; this keeps
+/// the cause so admission errors and RPC callers can name it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrefixFailureReason {
+    /// The frame's gas limit cannot cover the frame-entry access charge, so the
+    /// frame halts before running any code.
+    EntryGasTooLow { limit: u64, needed: u64 },
+    /// The frame's `value` exceeds the sender's balance.
+    ValueExceedsBalance { balance: U256, value: U256 },
+    /// `APPROVE` reverted because the paying account cannot cover the
+    /// transaction's maximum cost.
+    InsufficientFunds {
+        payer: Address,
+        balance: U256,
+        required: U256,
+    },
+    /// `APPROVE` reverted for a reason other than funds.
+    ApproveRejected(ApproveRejection),
+    /// The frame executed `REVERT`; `data` is its return data.
+    Revert { data: Bytes },
+    /// The frame halted exceptionally (out of gas, invalid opcode, stack error,
+    /// a state write in a static frame, ...).
+    Halt(ExceptionalHalt),
+    /// The frame's default code (a DEFAULT-mode frame that targets an account
+    /// without code) reported failure.
+    DefaultCodeFailed,
+    /// Any other VM error while running the frame.
+    Error(String),
+}
+
+/// The validation-prefix frame that failed, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrefixFrameFailure {
+    /// Index into `FrameTransaction.frames`.
+    pub frame_index: usize,
+    pub reason: PrefixFailureReason,
+}
+
 /// Result of [`VM::simulate_validation_prefix`] (EIP-8141 mempool simulation).
 #[derive(Debug, Clone)]
 pub struct PrefixSimResult {
@@ -605,6 +644,8 @@ pub struct PrefixSimResult {
     pub sender_approved: bool,
     /// Total simulated gas used across the prefix frames.
     pub total_gas_used: u64,
+    /// The frame that failed and why. `Some` exactly when `any_revert` is set.
+    pub failure: Option<PrefixFrameFailure>,
 }
 
 pub struct VM<'a> {
@@ -3594,6 +3635,8 @@ impl<'a> VM<'a> {
 
         let mut total_gas_used: u64 = 0;
         let mut any_revert = false;
+        // The frame that failed and why; set together with `any_revert`.
+        let mut failure: Option<PrefixFrameFailure> = None;
         // The highest prefix-frame index we must run before stopping. We run the
         // prefix in source order, executing every frame from 0 up to and
         // including the last prefix index (covering interleaved expiry frames).
@@ -3621,6 +3664,7 @@ impl<'a> VM<'a> {
                     )))?;
             ctx.current_frame_index = frame_idx;
             ctx.approve_called_in_current_frame = false;
+            self.validation_observer.approve_rejection = None;
 
             let target = frame.target.unwrap_or(sender);
 
@@ -3696,6 +3740,13 @@ impl<'a> VM<'a> {
                     self.restore_cache_state()?;
                     total_gas_used = total_gas_used.saturating_add(frame.gas_limit);
                     any_revert = true;
+                    failure = Some(PrefixFrameFailure {
+                        frame_index: frame_idx,
+                        reason: PrefixFailureReason::EntryGasTooLow {
+                            limit: frame.gas_limit,
+                            needed: frame_entry_access_cost,
+                        },
+                    });
                     break;
                 }
             };
@@ -3704,16 +3755,29 @@ impl<'a> VM<'a> {
                 limit: frame.state_limit,
             });
 
+            // The sender's balance when the frame's value exceeds it, for the report.
+            let mut value_shortfall: Option<U256> = None;
             let value_transfer_reverted = if !frame.value.is_zero() {
                 let sender_balance = self.db.get_account(sender)?.info.balance;
-                frame_value_exceeds_balance(sender_balance, frame.value)
+                let exceeds = frame_value_exceeds_balance(sender_balance, frame.value);
+                if exceeds {
+                    value_shortfall = Some(sender_balance);
+                }
+                exceeds
             } else {
                 false
             };
 
+            // Why this frame failed, when it does; read after the frame runs.
+            let mut frame_failure: Option<PrefixFailureReason> = None;
+
             let (frame_success, frame_gas_used) = if value_transfer_reverted {
                 self.substate.revert_backup();
                 self.restore_cache_state()?;
+                frame_failure = Some(PrefixFailureReason::ValueExceedsBalance {
+                    balance: value_shortfall.unwrap_or_default(),
+                    value: frame.value,
+                });
                 (false, frame.gas_limit)
             } else if bytecode.is_empty() && !is_delegation_7702 {
                 // Default-code path (target has neither code nor a delegation).
@@ -3729,12 +3793,14 @@ impl<'a> VM<'a> {
                         } else {
                             self.substate.revert_backup();
                             self.restore_cache_state()?;
+                            frame_failure = Some(PrefixFailureReason::DefaultCodeFailed);
                             (false, gas_used)
                         }
                     }
-                    Err(_) => {
+                    Err(err) => {
                         self.substate.revert_backup();
                         self.restore_cache_state()?;
+                        frame_failure = Some(PrefixFailureReason::Error(err.to_string()));
                         (false, frame.gas_limit)
                     }
                 }
@@ -3770,15 +3836,48 @@ impl<'a> VM<'a> {
                 let result = match frame_result {
                     Ok(ctx_result) => {
                         let gas_used = ctx_result.gas_used;
+                        if !ctx_result.is_success() {
+                            frame_failure = Some(match &ctx_result.result {
+                                TxResult::Revert(VMError::RevertOpcode) => {
+                                    // A plain revert. When it came from APPROVE, the
+                                    // observer recorded which of the several causes.
+                                    match self.validation_observer.approve_rejection.take() {
+                                        Some(ApproveRejection::InsufficientFunds {
+                                            payer,
+                                            balance,
+                                            required,
+                                        }) => PrefixFailureReason::InsufficientFunds {
+                                            payer,
+                                            balance,
+                                            required,
+                                        },
+                                        Some(other) => PrefixFailureReason::ApproveRejected(other),
+                                        None => PrefixFailureReason::Revert {
+                                            data: ctx_result.output.clone(),
+                                        },
+                                    }
+                                }
+                                TxResult::Revert(VMError::ExceptionalHalt(halt)) => {
+                                    PrefixFailureReason::Halt(halt.clone())
+                                }
+                                TxResult::Revert(other) => {
+                                    PrefixFailureReason::Error(other.to_string())
+                                }
+                                TxResult::Success => PrefixFailureReason::Error(
+                                    "frame reported failure with a success result".to_string(),
+                                ),
+                            });
+                        }
                         // The inner frame is the initial call frame, so `run_execution`
                         // already committed (success) or reverted + restored the cache
                         // (revert) this frame's backup via `handle_state_backup`. Only a
                         // `VMError` (the `Err` arm) leaves the backup live for us to undo.
                         (ctx_result.is_success(), gas_used)
                     }
-                    Err(_e) => {
+                    Err(e) => {
                         self.substate.revert_backup();
                         self.restore_cache_state()?;
+                        frame_failure = Some(PrefixFailureReason::Error(e.to_string()));
                         (false, frame.gas_limit)
                     }
                 };
@@ -3807,6 +3906,12 @@ impl<'a> VM<'a> {
 
             if !frame_success {
                 any_revert = true;
+                failure = Some(PrefixFrameFailure {
+                    frame_index: frame_idx,
+                    reason: frame_failure.unwrap_or_else(|| {
+                        PrefixFailureReason::Error("validation prefix frame failed".to_string())
+                    }),
+                });
             }
 
             // A reverted prefix frame is fatal: the transaction can never reach a
@@ -3840,6 +3945,7 @@ impl<'a> VM<'a> {
             payer_address: ctx.payer_address,
             sender_approved: ctx.sender_approved,
             total_gas_used,
+            failure,
         })
     }
 
