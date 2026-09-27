@@ -3331,10 +3331,11 @@ mod frame_validation_prefix_tests {
     use ethrex_common::{Address, H256, U256};
     use ethrex_crypto::NativeCrypto;
     use ethrex_levm::db::{Database, gen_db::GeneralizedDatabase};
-    use ethrex_levm::errors::DatabaseError;
+    use ethrex_levm::errors::{DatabaseError, ExceptionalHalt};
     use ethrex_levm::validation_observer::{CodeBodyBudget, FocilVopsSurface, Profile2Replay};
     use ethrex_levm::vm::VMType;
     use ethrex_vm::backends::levm::LEVM;
+    use ethrex_vm::backends::{ApproveRejection, PrefixFailureReason};
     use rustc_hash::FxHashMap;
     use std::sync::Arc;
 
@@ -3807,6 +3808,203 @@ mod frame_validation_prefix_tests {
             "a read at slot AA_VOPS_SLOT_COUNT - 1 must lie inside the Profile 2 surface, got {:?}",
             outcome.violation
         );
+    }
+
+    // ---- structured failure reasons (which frame failed, and why) ----
+
+    fn run_prefix(
+        tx: &Transaction,
+        frame_indices: Vec<usize>,
+        deploy_index: Option<usize>,
+        pay_index: Option<usize>,
+        shape: PrefixShape,
+        db: &mut GeneralizedDatabase,
+    ) -> ethrex_vm::backends::FrameValidationOutcome {
+        let prefix = ValidationPrefix {
+            shape,
+            frame_indices,
+            deploy_index,
+            pay_index,
+        };
+        LEVM::simulate_frame_validation_prefix(
+            tx,
+            &header(),
+            db,
+            VMType::L1,
+            &NativeCrypto,
+            &prefix,
+            None,
+            FRAME_TX_MAX_VERIFY_GAS,
+            None,
+        )
+        .expect("simulation runs")
+    }
+
+    /// One self_verify frame against `code` at the sender, with the given max fee.
+    fn self_verify_failure(
+        code: Bytes,
+        balance: u64,
+        max_fee_per_gas: u64,
+    ) -> ethrex_vm::backends::FrameValidationOutcome {
+        let sender = addr(0x5E_11_10);
+        let mut tx = frame_tx_prefix(sender, vec![frame(1, 0x03, sender, 50_000)]);
+        if let Transaction::FrameTransaction(ft) = &mut tx {
+            ft.max_fee_per_gas = max_fee_per_gas;
+            ft.max_priority_fee_per_gas = max_fee_per_gas;
+        }
+        let mut db = db_with(vec![(sender, account(balance, code))]);
+        run_prefix(&tx, vec![0], None, None, PrefixShape::SelfVerify, &mut db)
+    }
+
+    #[test]
+    fn a_passing_prefix_reports_no_failure() {
+        let outcome = self_verify_failure(approve_code(0x03), 0, 0);
+        assert!(outcome.passed);
+        assert_eq!(outcome.failure, None);
+    }
+
+    /// A payer that cannot cover the maximum cost makes APPROVE revert; the
+    /// failure must say so, with the payer, its balance and the cost, instead of
+    /// the anonymous "a frame reverted".
+    #[test]
+    fn an_underfunded_payer_reports_insufficient_funds() {
+        let sender = addr(0x5E_11_10);
+        let outcome = self_verify_failure(approve_code(0x03), 5, 1_000);
+        assert!(!outcome.passed);
+        assert_eq!(
+            outcome.violation.as_deref(),
+            Some("validation prefix frame reverted"),
+            "the coarse text stays as it was"
+        );
+        let failure = outcome.failure.expect("a failure is reported");
+        assert_eq!(failure.frame_index, 0);
+        assert_eq!(
+            failure.reason,
+            PrefixFailureReason::InsufficientFunds {
+                payer: sender,
+                balance: U256::from(5),
+                required: outcome.max_cost,
+            }
+        );
+        assert!(outcome.max_cost > U256::from(5));
+    }
+
+    #[test]
+    fn a_frame_that_cannot_pay_its_entry_charge_reports_entry_gas_too_low() {
+        let sender = addr(0x5E_11_11);
+        let tx = frame_tx_prefix(sender, vec![frame(1, 0x03, sender, 100)]);
+        let mut db = db_with(vec![(sender, account(0, approve_code(0x03)))]);
+        let outcome = run_prefix(&tx, vec![0], None, None, PrefixShape::SelfVerify, &mut db);
+        let failure = outcome.failure.expect("a failure is reported");
+        assert_eq!(failure.frame_index, 0);
+        match failure.reason {
+            PrefixFailureReason::EntryGasTooLow { limit, needed } => {
+                assert_eq!(limit, 100);
+                assert!(needed > limit, "the entry charge {needed} must exceed the limit");
+            }
+            other => panic!("expected EntryGasTooLow, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_explicit_revert_reports_its_return_data() {
+        // MSTORE8(0, 0xAB); REVERT(0, 1)
+        let code = Bytes::from(vec![
+            0x60, 0xAB, 0x60, 0x00, 0x53, 0x60, 0x01, 0x60, 0x00, 0xFD,
+        ]);
+        let outcome = self_verify_failure(code, 0, 0);
+        let failure = outcome.failure.expect("a failure is reported");
+        assert_eq!(failure.frame_index, 0);
+        assert_eq!(
+            failure.reason,
+            PrefixFailureReason::Revert {
+                data: Bytes::from(vec![0xAB]),
+            }
+        );
+    }
+
+    #[test]
+    fn an_invalid_opcode_reports_an_exceptional_halt() {
+        let outcome = self_verify_failure(Bytes::from(vec![0xFE]), 0, 0);
+        let failure = outcome.failure.expect("a failure is reported");
+        assert_eq!(
+            failure.reason,
+            PrefixFailureReason::Halt(ExceptionalHalt::InvalidOpcode)
+        );
+    }
+
+    #[test]
+    fn running_out_of_gas_reports_an_out_of_gas_halt() {
+        // JUMPDEST; PUSH1 0; JUMP: loops until the frame's gas is gone.
+        let outcome = self_verify_failure(Bytes::from(vec![0x5B, 0x60, 0x00, 0x56]), 0, 0);
+        let failure = outcome.failure.expect("a failure is reported");
+        assert_eq!(
+            failure.reason,
+            PrefixFailureReason::Halt(ExceptionalHalt::OutOfGas)
+        );
+    }
+
+    #[test]
+    fn a_state_write_in_a_verify_frame_reports_a_static_violation() {
+        // SSTORE(0, 1) in a VERIFY frame, which is static.
+        let outcome = self_verify_failure(
+            Bytes::from(vec![0x60, 0x01, 0x60, 0x00, 0x55, 0x00]),
+            0,
+            0,
+        );
+        let failure = outcome.failure.expect("a failure is reported");
+        assert_eq!(failure.frame_index, 0);
+        // The exact halt depends on whether the observer or the opcode handler
+        // objects to the write first; either way it is an exceptional halt.
+        assert!(
+            matches!(failure.reason, PrefixFailureReason::Halt(_)),
+            "expected an exceptional halt, got {:?}",
+            failure.reason
+        );
+    }
+
+    /// The second frame approves payment before any frame approved execution.
+    #[test]
+    fn payment_before_execution_approval_names_that_cause_and_frame() {
+        let sender = addr(0xDEAD02);
+        let paymaster = addr(0xBEEF02);
+        let tx = frame_tx_prefix(
+            sender,
+            vec![
+                frame(0, 0x00, sender, 50_000),
+                frame(1, 0x01, paymaster, 50_000),
+            ],
+        );
+        let mut db = db_with(vec![
+            (sender, account(0, Bytes::new())),
+            (paymaster, account(0, approve_code(0x01))),
+        ]);
+        let outcome = run_prefix(
+            &tx,
+            vec![0, 1],
+            Some(0),
+            Some(1),
+            PrefixShape::DeployOnlyVerifyPay,
+            &mut db,
+        );
+        let failure = outcome.failure.expect("a failure is reported");
+        assert_eq!(failure.frame_index, 1);
+        assert_eq!(
+            failure.reason,
+            PrefixFailureReason::ApproveRejected(ApproveRejection::PaymentBeforeExecution)
+        );
+    }
+
+    /// A trace-rule violation is reported through `violation` alone: no frame failed.
+    #[test]
+    fn a_trace_violation_is_not_a_frame_failure() {
+        // TIMESTAMP is banned in validation; the frame still approves and stops.
+        let mut code = vec![0x42, 0x50];
+        code.extend_from_slice(&approve_code(0x03));
+        let outcome = self_verify_failure(Bytes::from(code), 0, 0);
+        assert!(!outcome.passed);
+        assert_eq!(outcome.failure, None);
+        assert!(outcome.violation.is_some());
     }
 }
 

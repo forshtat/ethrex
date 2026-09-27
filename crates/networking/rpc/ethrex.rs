@@ -15,7 +15,10 @@ use ethrex_common::{
     },
 };
 use ethrex_crypto::NativeCrypto;
-use ethrex_vm::backends::{FrameValidationOutcome, levm::get_max_allowed_gas_limit};
+use ethrex_vm::backends::{
+    ApproveRejection, ExceptionalHalt, FrameValidationOutcome, PrefixFailureReason, PrefixFrameFailure,
+    levm::get_max_allowed_gas_limit,
+};
 use ethrex_vm::tracing::FrameEntry;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -122,6 +125,145 @@ struct SimulateFrameTransactionResult {
     /// whose trace pass succeeds, always sees this as `null`/absent, byte-for-byte
     /// unchanged from before this field existed.
     erc7562_trace_error: Option<String>,
+    /// Which validation-prefix frame failed and why, present only when the prefix
+    /// failed inside a frame (a revert or an exceptional halt). Its fields are
+    /// flattened into this object and are absent otherwise. `violation` still
+    /// carries the coarse text (`"validation prefix frame reverted"`), unchanged.
+    #[serde(flatten)]
+    failure: Option<PrefixFailureDetail>,
+}
+
+/// Machine-readable detail of a validation-prefix frame failure, flattened into
+/// [`SimulateFrameTransactionResult`]. `violation` says a prefix frame failed;
+/// this says which frame and why, so a client can tell "the payer has no funds"
+/// from "the verification ran out of gas" from "it reverted".
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PrefixFailureDetail {
+    /// Index (into the transaction's `frames`) of the frame that failed.
+    failed_frame_index: usize,
+    /// Machine-readable cause. One of `out_of_gas`, `revert`, `insufficient_funds`,
+    /// `value_exceeds_balance`, `payment_before_execution_approval`,
+    /// `approve_target_is_not_sender`, `approve_in_atomic_batch`, `invalid_opcode`,
+    /// `stack_error`, `invalid_jump`, `static_violation`, `halt` (any other
+    /// exceptional halt), `default_code_failed` or `vm_error`.
+    halt_reason: &'static str,
+    /// Human-readable description of the cause.
+    halt_detail: String,
+    /// `REVERT` return data as `0x`-hex, for `revert` only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    revert_data: Option<String>,
+    /// The account whose funds fell short, for `insufficient_funds` and
+    /// `value_exceeds_balance`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account: Option<Address>,
+    /// That account's balance in wei as `0x`-hex.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    balance: Option<String>,
+    /// The amount it needed in wei as `0x`-hex: the transaction's maximum cost for
+    /// `insufficient_funds`, the frame's `value` for `value_exceeds_balance`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    required: Option<String>,
+}
+
+impl PrefixFailureDetail {
+    fn new(
+        failed_frame_index: usize,
+        halt_reason: &'static str,
+        halt_detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            failed_frame_index,
+            halt_reason,
+            halt_detail: halt_detail.into(),
+            revert_data: None,
+            account: None,
+            balance: None,
+            required: None,
+        }
+    }
+
+    fn from_failure(failure: &PrefixFrameFailure, sender: Address) -> Self {
+        let index = failure.frame_index;
+        match &failure.reason {
+            PrefixFailureReason::EntryGasTooLow { limit, needed } => Self::new(
+                index,
+                "out_of_gas",
+                format!(
+                    "the frame's gas limit {limit} cannot cover its entry charge of {needed} gas"
+                ),
+            ),
+            PrefixFailureReason::ValueExceedsBalance { balance, value } => Self {
+                account: Some(sender),
+                balance: Some(to_hex_u256(*balance)),
+                required: Some(to_hex_u256(*value)),
+                ..Self::new(
+                    index,
+                    "value_exceeds_balance",
+                    "the frame's value exceeds the sender's balance",
+                )
+            },
+            PrefixFailureReason::InsufficientFunds {
+                payer,
+                balance,
+                required,
+            } => Self {
+                account: Some(*payer),
+                balance: Some(to_hex_u256(*balance)),
+                required: Some(to_hex_u256(*required)),
+                ..Self::new(
+                    index,
+                    "insufficient_funds",
+                    "the paying account cannot cover the transaction's maximum cost",
+                )
+            },
+            PrefixFailureReason::ApproveRejected(rejection) => {
+                let (reason, detail) = match rejection {
+                    ApproveRejection::PaymentBeforeExecution => (
+                        "payment_before_execution_approval",
+                        "APPROVE(payment) ran before the sender approved execution",
+                    ),
+                    ApproveRejection::TargetIsNotSender => (
+                        "approve_target_is_not_sender",
+                        "APPROVE(execution and payment) ran in a frame that does not target the sender",
+                    ),
+                    ApproveRejection::InAtomicBatch => (
+                        "approve_in_atomic_batch",
+                        "APPROVE(payment) is not allowed inside an atomic batch",
+                    ),
+                    // Reported as `InsufficientFunds` above; kept exhaustive.
+                    ApproveRejection::InsufficientFunds { .. } => (
+                        "insufficient_funds",
+                        "the paying account cannot cover the transaction's maximum cost",
+                    ),
+                };
+                Self::new(index, reason, detail)
+            }
+            PrefixFailureReason::Revert { data } => Self {
+                revert_data: Some(format!("0x{}", hex::encode(data))),
+                ..Self::new(index, "revert", "the frame reverted")
+            },
+            PrefixFailureReason::Halt(halt) => {
+                let reason = match halt {
+                    ExceptionalHalt::OutOfGas => "out_of_gas",
+                    ExceptionalHalt::InvalidOpcode => "invalid_opcode",
+                    ExceptionalHalt::StackUnderflow | ExceptionalHalt::StackOverflow => {
+                        "stack_error"
+                    }
+                    ExceptionalHalt::InvalidJump => "invalid_jump",
+                    ExceptionalHalt::OpcodeNotAllowedInStaticContext => "static_violation",
+                    _ => "halt",
+                };
+                Self::new(index, reason, halt.to_string())
+            }
+            PrefixFailureReason::DefaultCodeFailed => Self::new(
+                index,
+                "default_code_failed",
+                "the frame's default code reported failure",
+            ),
+            PrefixFailureReason::Error(error) => Self::new(index, "vm_error", error.clone()),
+        }
+    }
 }
 
 /// Per-frame execution outcome for the full-execution step.
@@ -328,6 +470,7 @@ impl RpcHandler for SimulateFrameTransactionRequest {
                 execution_error: None,
                 erc7562_trace: None,
                 erc7562_trace_error: None,
+                failure: None,
             });
         }
 
@@ -354,6 +497,10 @@ impl RpcHandler for SimulateFrameTransactionRequest {
                 execution_error: None,
                 erc7562_trace: None,
                 erc7562_trace_error: None,
+                failure: outcome
+                    .failure
+                    .as_ref()
+                    .map(|failure| PrefixFailureDetail::from_failure(failure, frame_tx.sender)),
             });
         }
 
@@ -395,6 +542,7 @@ impl RpcHandler for SimulateFrameTransactionRequest {
             execution_error,
             erc7562_trace,
             erc7562_trace_error,
+            failure: None,
         })
     }
 }
@@ -526,6 +674,7 @@ fn structurally_invalid(violation: String, max_cost: String) -> Result<Value, Rp
         execution_error: None,
         erc7562_trace: None,
         erc7562_trace_error: None,
+        failure: None,
     })
 }
 

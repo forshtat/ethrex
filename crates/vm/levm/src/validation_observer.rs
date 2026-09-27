@@ -30,7 +30,7 @@
 //! `current_frame_index == canonical_paymaster_pay_frame` skip applies the
 //! exemption to it.
 
-use ethrex_common::{Address, H256};
+use ethrex_common::{Address, H256, U256};
 
 /// A validation-trace rule violation detected during prefix simulation.
 ///
@@ -166,6 +166,27 @@ pub struct Profile2Replay {
 /// `if self.validation_observer.active`, so an inactive observer has zero
 /// overhead on the perf-sensitive execution path (one branch), exactly like
 /// [`LevmOpcodeTracer`](crate::opcode_tracer::LevmOpcodeTracer).
+/// Why an `APPROVE` reverted the validation-prefix frame. Diagnostic only: it
+/// is recorded (while the observer is active) at the point `APPROVE` returns
+/// `RevertOpcode`, so the simulator can say which of several indistinguishable
+/// reverts happened. It never influences execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApproveRejection {
+    /// Payment was approved before the sender approved execution.
+    PaymentBeforeExecution,
+    /// `APPROVE_EXECUTION_AND_PAYMENT` was called from a frame whose target is
+    /// not the transaction sender.
+    TargetIsNotSender,
+    /// Payment approval was attempted inside an atomic batch.
+    InAtomicBatch,
+    /// The paying account's balance cannot cover the transaction's maximum cost.
+    InsufficientFunds {
+        payer: Address,
+        balance: U256,
+        required: U256,
+    },
+}
+
 #[derive(Debug, Clone)]
 pub struct ValidationObserver {
     /// Whether this observer is active. `false` disables every hook.
@@ -214,6 +235,10 @@ pub struct ValidationObserver {
     /// ordinary mempool simulation, which is a local policy and bounds its own
     /// work by the operator's `MAX_VERIFY_GAS` instead.
     pub code_budget: Option<CodeBodyBudget>,
+    /// Why the most recent `APPROVE` in the current prefix frame reverted, if it
+    /// did. The prefix simulator clears it before each frame and reads it when the
+    /// frame fails with a plain revert.
+    pub approve_rejection: Option<ApproveRejection>,
 }
 
 impl ValidationObserver {
@@ -234,6 +259,7 @@ impl ValidationObserver {
             violation: None,
             focil_surface: None,
             code_budget: None,
+            approve_rejection: None,
         }
     }
 
@@ -259,6 +285,15 @@ impl ValidationObserver {
             violation: None,
             focil_surface: None,
             code_budget: None,
+            approve_rejection: None,
+        }
+    }
+
+    /// Records why an `APPROVE` is about to revert. A no-op unless the observer is
+    /// active, so consensus execution pays nothing for it.
+    pub fn record_approve_rejection(&mut self, rejection: ApproveRejection) {
+        if self.active {
+            self.approve_rejection = Some(rejection);
         }
     }
 

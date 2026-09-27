@@ -402,6 +402,12 @@ pub fn compute_burned_fees(
         .saturating_add(blob_base_fee.saturating_mul(blob_gas_used))
 }
 
+pub use ethrex_levm::{
+    errors::ExceptionalHalt,
+    validation_observer::ApproveRejection,
+    vm::{PrefixFailureReason, PrefixFrameFailure},
+};
+
 /// Outcome of an EIP-8141 mempool validation-prefix simulation
 /// ([`Evm::simulate_frame_validation_prefix`]). A local peer policy result, not
 /// a consensus value.
@@ -436,6 +442,10 @@ pub struct FrameValidationOutcome {
     /// replay left it, for the caller to carry to the next replay of the same
     /// list. `None` for ordinary mempool simulation, which configures no budget.
     pub code_budget: Option<ethrex_levm::validation_observer::CodeBodyBudget>,
+    /// The prefix frame that failed and why, when a frame reverted or halted.
+    /// `None` when the prefix passed or was rejected by a trace rule or a
+    /// post-run check instead (see `violation`).
+    pub failure: Option<PrefixFrameFailure>,
 }
 
 #[derive(Clone, Debug)]

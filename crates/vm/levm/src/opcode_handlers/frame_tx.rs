@@ -17,6 +17,7 @@ use crate::{
     memory::calculate_memory_size,
     opcode_handlers::OpcodeHandler,
     utils::size_offset_to_usize,
+    validation_observer::ApproveRejection,
     vm::VM,
 };
 use ethrex_common::{Address, U256, types::FrameMode, types::Log};
@@ -63,6 +64,25 @@ pub(crate) fn compute_tx_max_cost(ctx: &crate::vm::FrameTxContext) -> Result<U25
         .ok_or(ExceptionalHalt::InvalidOpcode.into())
 }
 
+/// Diagnostic for the validation-prefix simulator: an APPROVE reverted because
+/// `payer` cannot cover `required`. Reads the balance only while the observer is
+/// active, so consensus execution never pays for it, and never fails the caller:
+/// a failed read simply records nothing.
+fn record_insufficient_funds(vm: &mut VM<'_>, payer: Address, required: U256) {
+    if !vm.validation_observer.active {
+        return;
+    }
+    if let Ok(account) = vm.db.get_account(payer) {
+        let balance = account.info.balance;
+        vm.validation_observer
+            .record_approve_rejection(ApproveRejection::InsufficientFunds {
+                payer,
+                balance,
+                required,
+            });
+    }
+}
+
 /// Apply APPROVE side effects for the given scope.
 /// This is shared between OpApproveHandler and (future) default code.
 pub fn apply_approve(
@@ -98,6 +118,8 @@ pub fn apply_approve(
             let vault_sender = vm.env.config.utxo_frames_active
                 && ctx.tx.sender == ethrex_common::types::utxo_vault();
             if !ctx.sender_approved && !vault_sender {
+                vm.validation_observer
+                    .record_approve_rejection(ApproveRejection::PaymentBeforeExecution);
                 return Err(VMError::RevertOpcode);
             }
             // EIP-8250: a payment approval's effects (nonce consumption, payer
@@ -112,6 +134,8 @@ pub fn apply_approve(
             // granted from a non-batch frame (the validation prefix, which
             // already bans the batch flag). See docs/eip-8250.md.
             if ctx.tx.frame_is_in_atomic_batch(ctx.current_frame_index) {
+                vm.validation_observer
+                    .record_approve_rejection(ApproveRejection::InAtomicBatch);
                 return Err(VMError::RevertOpcode);
             }
             let tx_cost = compute_tx_max_cost(ctx)?;
@@ -123,7 +147,10 @@ pub fn apply_approve(
             // increment above when RevertOpcode propagates.
             match vm.decrease_account_balance(frame_target, tx_cost) {
                 Ok(()) => {}
-                Err(InternalError::Underflow) => return Err(VMError::RevertOpcode),
+                Err(InternalError::Underflow) => {
+                    record_insufficient_funds(vm, frame_target, tx_cost);
+                    return Err(VMError::RevertOpcode);
+                }
                 Err(e) => return Err(VMError::Internal(e)),
             }
 
@@ -166,12 +193,16 @@ pub fn apply_approve(
                 return Err(ExceptionalHalt::InvalidOpcode.into());
             }
             if frame_target != ctx.tx.sender {
+                vm.validation_observer
+                    .record_approve_rejection(ApproveRejection::TargetIsNotSender);
                 return Err(VMError::RevertOpcode);
             }
             // Payment approval inside an atomic batch would let a sibling revert
             // unwind the balance debit while the tx stays authorized — forbidden
             // (EIP-8250 durability).
             if ctx.tx.frame_is_in_atomic_batch(ctx.current_frame_index) {
+                vm.validation_observer
+                    .record_approve_rejection(ApproveRejection::InAtomicBatch);
                 return Err(VMError::RevertOpcode);
             }
             let tx_cost = compute_tx_max_cost(ctx)?;
@@ -181,7 +212,10 @@ pub fn apply_approve(
             // See scope 0x1 above for the Underflow → RevertOpcode rationale.
             match vm.decrease_account_balance(frame_target, tx_cost) {
                 Ok(()) => {}
-                Err(InternalError::Underflow) => return Err(VMError::RevertOpcode),
+                Err(InternalError::Underflow) => {
+                    record_insufficient_funds(vm, frame_target, tx_cost);
+                    return Err(VMError::RevertOpcode);
+                }
                 Err(e) => return Err(VMError::Internal(e)),
             }
 

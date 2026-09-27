@@ -3234,6 +3234,7 @@ impl LEVM {
                     touched_sender_slots: Vec::new(),
                     read_legacy_nonce: false,
                     code_budget: profile_2.map(|p| p.code_budget),
+                    failure: None,
                 });
             }
         };
@@ -3270,6 +3271,7 @@ impl LEVM {
             touched_sender_slots,
             read_legacy_nonce,
             code_budget: vm.validation_observer.code_budget.clone(),
+            failure: sim.failure.clone(),
         };
         let rejected = |reason: String| FrameValidationOutcome {
             violation: Some(reason),
