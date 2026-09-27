@@ -3995,6 +3995,72 @@ mod frame_validation_prefix_tests {
         );
     }
 
+    /// The exact bug this guards against: `apply_approve`'s insufficient-funds
+    /// revert was only classified on the child-CallFrame execution path (a
+    /// contract sender). An EOA sender approves through the DIFFERENT
+    /// default-code path (`execute_default_verify`), which used to fall through
+    /// to the generic `PrefixFailureReason::Error("RevertOpcode")` (the bare
+    /// `VMError` variant name) instead of naming the payer/balance/cost — found
+    /// running Skandha's traffic playground against a real EOA transaction.
+    #[test]
+    fn an_eoa_sender_with_insufficient_funds_reports_the_same_detail_as_a_contract_payer() {
+        use ethrex_common::types::{FRAME_SIG_SCHEME_SECP256K1, FrameSignature};
+        use k256::ecdsa::SigningKey;
+
+        let signing_key = SigningKey::from_bytes(&[0x37; 32].into()).unwrap();
+        let uncompressed = signing_key.verifying_key().to_encoded_point(false);
+        let pub_hash = ethrex_crypto::keccak::keccak_hash(&uncompressed.as_bytes()[1..]);
+        let sender = Address::from_slice(&pub_hash[12..]);
+
+        // Self Relay: one self_verify frame, target explicitly the sender, scope 3
+        // (APPROVE_EXECUTION_AND_PAYMENT) — the same shape `self_verify_failure`
+        // uses, except this sender has no code, so admission runs the default-code
+        // path instead of a child CallFrame.
+        let mut tx = frame_tx_prefix(sender, vec![frame(1, 0x03, sender, 50_000)]);
+        let Transaction::FrameTransaction(ft) = &mut tx else {
+            unreachable!()
+        };
+        ft.max_fee_per_gas = 1_000;
+        ft.max_priority_fee_per_gas = 1_000;
+        // `signer: None` (elided, resolves to tx.sender) must be the FINAL value
+        // before hashing: the sig hash commits every signature field but the
+        // signature bytes themselves.
+        ft.signatures = vec![FrameSignature {
+            scheme: FRAME_SIG_SCHEME_SECP256K1,
+            signer: None,
+            msg: Bytes::new(),
+            signature: Bytes::from(vec![0u8; 65]),
+        }];
+        let sig_hash = ft.compute_sig_hash();
+        let (raw_sig, recovery_id) = signing_key
+            .sign_prehash_recoverable(sig_hash.as_bytes())
+            .unwrap();
+        let mut sig_bytes = vec![0u8; 65];
+        sig_bytes[0] = recovery_id.to_byte();
+        sig_bytes[1..33].copy_from_slice(&raw_sig.to_bytes()[..32]);
+        sig_bytes[33..65].copy_from_slice(&raw_sig.to_bytes()[32..]);
+        ft.signatures[0].signature = Bytes::from(sig_bytes);
+        ft.inner_hash = Default::default();
+        ft.cached_canonical = Default::default();
+
+        let mut db = db_with(vec![(sender, account(0, Bytes::new()))]);
+        let outcome = run_prefix(&tx, vec![0], None, None, PrefixShape::SelfVerify, &mut db);
+
+        assert!(!outcome.passed);
+        let failure = outcome.failure.expect("a failure is reported");
+        assert_eq!(failure.frame_index, 0);
+        assert_eq!(
+            failure.reason,
+            PrefixFailureReason::InsufficientFunds {
+                payer: sender,
+                balance: U256::zero(),
+                required: outcome.max_cost,
+            },
+            "must name the payer/balance/cost, not fall back to the raw VMError text"
+        );
+        assert!(outcome.max_cost > U256::zero());
+    }
+
     /// A trace-rule violation is reported through `violation` alone: no frame failed.
     #[test]
     fn a_trace_violation_is_not_a_frame_failure() {

@@ -633,6 +633,38 @@ pub struct PrefixFrameFailure {
     pub reason: PrefixFailureReason,
 }
 
+/// Classifies a `VMError` from a validation-prefix frame into a
+/// [`PrefixFailureReason`]. Shared by every path that can run `APPROVE` (a
+/// child-CallFrame execution AND the EOA default-code path both call it), so a
+/// `RevertOpcode` from either one is explained the same way: the specific
+/// `ApproveRejection` the observer recorded, when there is one, else a plain
+/// revert (or, for anything else, the matching halt/error).
+fn classify_prefix_frame_error(
+    observer: &mut ValidationObserver,
+    err: &VMError,
+    revert_data: Option<Bytes>,
+) -> PrefixFailureReason {
+    match err {
+        VMError::RevertOpcode => match observer.approve_rejection.take() {
+            Some(ApproveRejection::InsufficientFunds {
+                payer,
+                balance,
+                required,
+            }) => PrefixFailureReason::InsufficientFunds {
+                payer,
+                balance,
+                required,
+            },
+            Some(other) => PrefixFailureReason::ApproveRejected(other),
+            None => PrefixFailureReason::Revert {
+                data: revert_data.unwrap_or_default(),
+            },
+        },
+        VMError::ExceptionalHalt(halt) => PrefixFailureReason::Halt(halt.clone()),
+        other => PrefixFailureReason::Error(other.to_string()),
+    }
+}
+
 /// Result of [`VM::simulate_validation_prefix`] (EIP-8141 mempool simulation).
 #[derive(Debug, Clone)]
 pub struct PrefixSimResult {
@@ -3800,7 +3832,11 @@ impl<'a> VM<'a> {
                     Err(err) => {
                         self.substate.revert_backup();
                         self.restore_cache_state()?;
-                        frame_failure = Some(PrefixFailureReason::Error(err.to_string()));
+                        frame_failure = Some(classify_prefix_frame_error(
+                            &mut self.validation_observer,
+                            &err,
+                            None,
+                        ));
                         (false, frame.gas_limit)
                     }
                 }
@@ -3838,31 +3874,11 @@ impl<'a> VM<'a> {
                         let gas_used = ctx_result.gas_used;
                         if !ctx_result.is_success() {
                             frame_failure = Some(match &ctx_result.result {
-                                TxResult::Revert(VMError::RevertOpcode) => {
-                                    // A plain revert. When it came from APPROVE, the
-                                    // observer recorded which of the several causes.
-                                    match self.validation_observer.approve_rejection.take() {
-                                        Some(ApproveRejection::InsufficientFunds {
-                                            payer,
-                                            balance,
-                                            required,
-                                        }) => PrefixFailureReason::InsufficientFunds {
-                                            payer,
-                                            balance,
-                                            required,
-                                        },
-                                        Some(other) => PrefixFailureReason::ApproveRejected(other),
-                                        None => PrefixFailureReason::Revert {
-                                            data: ctx_result.output.clone(),
-                                        },
-                                    }
-                                }
-                                TxResult::Revert(VMError::ExceptionalHalt(halt)) => {
-                                    PrefixFailureReason::Halt(halt.clone())
-                                }
-                                TxResult::Revert(other) => {
-                                    PrefixFailureReason::Error(other.to_string())
-                                }
+                                TxResult::Revert(err) => classify_prefix_frame_error(
+                                    &mut self.validation_observer,
+                                    err,
+                                    Some(ctx_result.output.clone()),
+                                ),
                                 TxResult::Success => PrefixFailureReason::Error(
                                     "frame reported failure with a success result".to_string(),
                                 ),
@@ -3877,7 +3893,11 @@ impl<'a> VM<'a> {
                     Err(e) => {
                         self.substate.revert_backup();
                         self.restore_cache_state()?;
-                        frame_failure = Some(PrefixFailureReason::Error(e.to_string()));
+                        frame_failure = Some(classify_prefix_frame_error(
+                            &mut self.validation_observer,
+                            &e,
+                            None,
+                        ));
                         (false, frame.gas_limit)
                     }
                 };
