@@ -147,7 +147,7 @@ empty msg) and simulate each:
 ```
 curl -s -X POST -H 'content-type: application/json' \
   --data '{"jsonrpc":"2.0","method":"ethrex_simulateFrameTransaction","params":["<raw>"],"id":1}' \
-  https://rpc1.privacy.ethrex.xyz | jq -r .result.violation
+  https://rpc1.privacy.ethrex.xyz | jq -r .result.canonicalMempoolViolation
 ```
 
 At 500 000 the 75-signature transaction answers `signature verification cost 502500
