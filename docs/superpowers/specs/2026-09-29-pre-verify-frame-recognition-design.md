@@ -27,14 +27,27 @@ demo end-to-end.
 spec — see below):** shape recognition, plus decoupling
 `ethrex_simulateFrameTransaction`'s canonical-mempool-policy verdict from
 whether it actually runs and reports execution. Explicitly **out of
-scope**: EIP-8369 Profile 2 (FOCIL AA-VOPS) inclusion-list eligibility
-awareness of `pre_verify`, the canonical-paymaster exemption pattern, and
-EIP-8312 vault-sender/self-funded-UTXO interplay — none of these need to
-know about `pre_verify` for the demo to work, and adding it there is
-deferred until a concrete need shows up. Also out of scope: the real
+scope**: the canonical-paymaster exemption pattern and EIP-8312
+vault-sender/self-funded-UTXO interplay. Also out of scope: the real
 mempool's own admission path (`blockchain.rs`'s transaction-pool
 admission, backing `eth_sendRawTransaction`) — this spec touches only the
 read-only `ethrex_simulateFrameTransaction` RPC's own handler.
+
+**Known incidental behavior change (found during final review, accepted as-is
+— not a deliberate code change, just documented):** EIP-8369 Profile 2
+(FOCIL AA-VOPS) inclusion-list eligibility (`crates/blockchain/focil_eligibility.rs`,
+`crates/blockchain/focil_profile2.rs`) calls the same shared
+`validation_prefix()` this spec extends. Before this change, a `pre_verify`
+transaction was always `UnrecognizedPrefix` and therefore never a Profile 2
+candidate; after this change, a transaction with a recognized `pre_verify`
+shape CAN become a Profile 2 candidate (its prefix gas is counted toward
+`verify_budget_prefix_cost`, and a pre_verify frame that stays inside the
+AA-VOPS storage surface can pass Profile 2 replay) — purely as a side effect
+of sharing the recognizer, with no `pre_verify`-specific FOCIL logic added.
+This was NOT gated off: the user reviewed this finding and chose to accept
+the behavior change rather than add a `pre_verify_indices.is_empty()` guard
+to preserve the old exclusion. If FOCIL/Profile 2 eligibility for
+`pre_verify` transactions ever needs to be revisited, start here.
 
 **Revision note:** an earlier draft of this spec's Part 2 proposed
 widening `ValidationObserver`'s write-permission gate (a

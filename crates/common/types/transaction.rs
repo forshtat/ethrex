@@ -3075,17 +3075,26 @@ impl FrameTransaction {
         let is_verify =
             |pos: usize| -> bool { frame(pos).is_some_and(|f| f.mode == FrameMode::Verify as u8) };
         let scope_of = |pos: usize| -> u8 { frame(pos).map_or(0, |f| f.scope_restriction()) };
-        // Deliberately NOT `.unwrap_or(self.sender)`: a DEFAULT-mode frame's
-        // `target: None` means CREATE-at-self-address semantics for a real
-        // deploy (the `deploy_frame()` test helper always uses `None`), so
-        // resolving it to `sender` here would make an ordinary deploy frame
-        // indistinguishable from a pre_verify frame targeting sender. A
-        // pre_verify candidate therefore requires an EXPLICIT target.
-        let target_at = |pos: usize| -> Option<Address> { frame(pos).and_then(|f| f.target) };
+        // Resolved the same way for every frame (DEFAULT included): `target:
+        // None` means "tx.sender", not "CREATE" — confirmed by the VM's own
+        // `target.unwrap_or(sender)` at every call/dispatch site, which
+        // applies uniformly regardless of frame mode. A real, admission-
+        // passing deploy frame targets a distinct factory contract (a call
+        // to a codeless address with target == sender is a documented no-op
+        // per `execute_default_code`'s DEFAULT-mode branch, so it would
+        // always fail `DeployInstalledNoCode` at runtime even though it is
+        // structurally legal here — `validate_prefix_structure` places no
+        // target restriction on deploy). So a leading DEFAULT frame whose
+        // resolved target equals the next approving frame's resolved target
+        // is never a *working* deploy; trying the no-deploy (pre_verify)
+        // interpretation first, below, is what correctly prefers that
+        // reading over deploy for such a frame.
+        let target_at =
+            |pos: usize| -> Address { frame(pos).and_then(|f| f.target).unwrap_or(self.sender) };
 
         // Matches an approving VERIFY frame with `expected_scope` at `pos`,
         // optionally preceded by a pre_verify frame (a DEFAULT-mode frame
-        // with an explicit target equal to the approving frame's). Returns
+        // whose resolved target equals the approving frame's). Returns
         // the approving frame's position, the pre_verify frame's position
         // (if any), and the next unconsumed position.
         let match_approving =
@@ -3094,7 +3103,6 @@ impl FrameTransaction {
                     return Some((pos, None, pos + 1));
                 }
                 if is_default(pos)
-                    && target_at(pos).is_some()
                     && is_verify(pos + 1)
                     && scope_of(pos + 1) == expected_scope
                     && target_at(pos) == target_at(pos + 1)
@@ -3227,18 +3235,15 @@ impl FrameTransaction {
                 if frame.mode != FrameMode::Default as u8 {
                     return Err(FrameValidationError::PreVerifyNotDefaultMode { frame_index: idx });
                 }
-                // Explicit `Some` only — `None` (deploy's CREATE-at-self
-                // semantics) must never be treated as "matches the
-                // approving frame's target"; see `target_at`'s note in
-                // `validation_prefix()`.
+                // Resolved the same way as `target_at` in `validation_prefix()`
+                // (`None` means sender, for both sides); this re-derives an
+                // invariant that construction already guarantees, matching
+                // this function's existing defense-in-depth style for the
+                // deploy branch below.
                 let approving_target = self.frames[approving_idx].target.unwrap_or(self.sender);
-                match frame.target {
-                    Some(addr) if addr == approving_target => {}
-                    _ => {
-                        return Err(FrameValidationError::PreVerifyTargetMismatch {
-                            frame_index: idx,
-                        });
-                    }
+                let pre_verify_target = frame.target.unwrap_or(self.sender);
+                if pre_verify_target != approving_target {
+                    return Err(FrameValidationError::PreVerifyTargetMismatch { frame_index: idx });
                 }
             } else {
                 match prefix.deploy_index {

@@ -179,11 +179,23 @@ fn pay_frame() -> Frame {
     }
 }
 
+fn factory_addr() -> Address {
+    Address::from_low_u64_be(0xFAC7)
+}
+
+/// A real, admission-passing deploy frame targets a distinct factory
+/// contract explicitly — `target: None`/`Some(sender)` resolves to sender,
+/// which `execute_default_code` always treats as a no-op for a codeless
+/// target, so such a deploy would fail `DeployInstalledNoCode` at runtime
+/// even though it is structurally legal. Targeting a distinct factory also
+/// keeps this frame from resolving to the same target as an adjacent
+/// approving frame, which is what `validation_prefix()` uses (trying the
+/// no-deploy/pre_verify reading first) to tell deploy and pre_verify apart.
 fn deploy_frame() -> Frame {
     Frame {
         mode: FrameMode::Default as u8,
         flags: 0x00,
-        target: None,
+        target: Some(factory_addr()),
         gas_limit: 50_000,
         state_limit: 0,
         value: U256::zero(),
