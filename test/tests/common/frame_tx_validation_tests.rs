@@ -191,6 +191,34 @@ fn deploy_frame() -> Frame {
     }
 }
 
+fn payer_addr() -> Address {
+    Address::from_low_u64_be(0xFACE)
+}
+
+/// A `pre_verify` candidate: DEFAULT mode, an explicit target (never `None`
+/// — see `target_at`'s doc in `validation_prefix()` for why), small gas so
+/// the heaviest 5-frame test fixture below stays under
+/// `FRAME_TX_MAX_VERIFY_GAS` (100_000).
+fn pre_verify_frame(target: Address) -> Frame {
+    Frame {
+        mode: FrameMode::Default as u8,
+        flags: 0x00,
+        target: Some(target),
+        gas_limit: 5_000,
+        state_limit: 0,
+        value: U256::zero(),
+        data: Bytes::from_static(b"pull_payment"),
+    }
+}
+
+/// `pay_frame()` with an explicit non-sender target (a sponsor), per
+/// structural rule 4.
+fn pay_frame_to(target: Address) -> Frame {
+    let mut frame = pay_frame();
+    frame.target = Some(target);
+    frame
+}
+
 fn base_frame_tx_with_frames(frames: Vec<Frame>) -> FrameTransaction {
     FrameTransaction {
         sender: sender_addr(),
@@ -258,6 +286,161 @@ fn prefix_shape_deploy_only_verify_pay() {
     assert_eq!(prefix.pay_index, Some(2));
     tx.validate_prefix_structure(&prefix, FRAME_TX_MAX_VERIFY_GAS)
         .expect("DeployOnlyVerifyPay structure should be valid");
+}
+
+// --- pre_verify shape tests ---
+
+#[test]
+fn prefix_shape_self_verify_with_pre_verify() {
+    let tx = base_frame_tx_with_frames(vec![pre_verify_frame(sender_addr()), self_verify_frame()]);
+    let prefix = tx
+        .validation_prefix()
+        .expect("should recognize SelfVerify with a leading pre_verify frame");
+    assert_eq!(prefix.shape, PrefixShape::SelfVerify);
+    assert_eq!(prefix.frame_indices, vec![0, 1]);
+    assert_eq!(prefix.deploy_index, None);
+    assert_eq!(prefix.pay_index, Some(1));
+    assert_eq!(prefix.pre_verify_indices, vec![(0, 1)]);
+    tx.validate_prefix_structure(&prefix, FRAME_TX_MAX_VERIFY_GAS)
+        .expect("SelfVerify with pre_verify should be structurally valid");
+}
+
+#[test]
+fn prefix_shape_deploy_self_verify_with_pre_verify() {
+    let tx = base_frame_tx_with_frames(vec![
+        deploy_frame(),
+        pre_verify_frame(sender_addr()),
+        self_verify_frame(),
+    ]);
+    let prefix = tx
+        .validation_prefix()
+        .expect("should recognize DeploySelfVerify with a pre_verify frame");
+    assert_eq!(prefix.shape, PrefixShape::DeploySelfVerify);
+    assert_eq!(prefix.frame_indices, vec![0, 1, 2]);
+    assert_eq!(prefix.deploy_index, Some(0));
+    assert_eq!(prefix.pay_index, Some(2));
+    assert_eq!(prefix.pre_verify_indices, vec![(1, 2)]);
+    tx.validate_prefix_structure(&prefix, FRAME_TX_MAX_VERIFY_GAS)
+        .expect("DeploySelfVerify with pre_verify should be structurally valid");
+}
+
+#[test]
+fn prefix_shape_only_verify_pay_with_pre_verify_before_exec() {
+    let tx = base_frame_tx_with_frames(vec![
+        pre_verify_frame(sender_addr()),
+        only_verify_frame(),
+        pay_frame(),
+    ]);
+    let prefix = tx
+        .validation_prefix()
+        .expect("should recognize OnlyVerifyPay with pre_verify before exec");
+    assert_eq!(prefix.shape, PrefixShape::OnlyVerifyPay);
+    assert_eq!(prefix.frame_indices, vec![0, 1, 2]);
+    assert_eq!(prefix.deploy_index, None);
+    assert_eq!(prefix.pay_index, Some(2));
+    assert_eq!(prefix.pre_verify_indices, vec![(0, 1)]);
+    tx.validate_prefix_structure(&prefix, FRAME_TX_MAX_VERIFY_GAS)
+        .expect("OnlyVerifyPay with pre_verify before exec should be structurally valid");
+}
+
+#[test]
+fn prefix_shape_only_verify_pay_with_pre_verify_before_pay() {
+    let tx = base_frame_tx_with_frames(vec![
+        only_verify_frame(),
+        pre_verify_frame(payer_addr()),
+        pay_frame_to(payer_addr()),
+    ]);
+    let prefix = tx
+        .validation_prefix()
+        .expect("should recognize OnlyVerifyPay with pre_verify before pay");
+    assert_eq!(prefix.shape, PrefixShape::OnlyVerifyPay);
+    assert_eq!(prefix.frame_indices, vec![0, 1, 2]);
+    assert_eq!(prefix.deploy_index, None);
+    assert_eq!(prefix.pay_index, Some(2));
+    assert_eq!(prefix.pre_verify_indices, vec![(1, 2)]);
+    tx.validate_prefix_structure(&prefix, FRAME_TX_MAX_VERIFY_GAS)
+        .expect("OnlyVerifyPay with pre_verify before pay should be structurally valid");
+}
+
+#[test]
+fn prefix_shape_only_verify_pay_with_pre_verify_before_both() {
+    let tx = base_frame_tx_with_frames(vec![
+        pre_verify_frame(sender_addr()),
+        only_verify_frame(),
+        pre_verify_frame(payer_addr()),
+        pay_frame_to(payer_addr()),
+    ]);
+    let prefix = tx
+        .validation_prefix()
+        .expect("should recognize OnlyVerifyPay with pre_verify before both exec and pay");
+    assert_eq!(prefix.shape, PrefixShape::OnlyVerifyPay);
+    assert_eq!(prefix.frame_indices, vec![0, 1, 2, 3]);
+    assert_eq!(prefix.deploy_index, None);
+    assert_eq!(prefix.pay_index, Some(3));
+    assert_eq!(prefix.pre_verify_indices, vec![(0, 1), (2, 3)]);
+    tx.validate_prefix_structure(&prefix, FRAME_TX_MAX_VERIFY_GAS)
+        .expect("OnlyVerifyPay with pre_verify before both should be structurally valid");
+}
+
+#[test]
+fn prefix_shape_deploy_only_verify_pay_with_pre_verify_before_exec() {
+    let tx = base_frame_tx_with_frames(vec![
+        deploy_frame(),
+        pre_verify_frame(sender_addr()),
+        only_verify_frame(),
+        pay_frame(),
+    ]);
+    let prefix = tx
+        .validation_prefix()
+        .expect("should recognize DeployOnlyVerifyPay with pre_verify before exec");
+    assert_eq!(prefix.shape, PrefixShape::DeployOnlyVerifyPay);
+    assert_eq!(prefix.frame_indices, vec![0, 1, 2, 3]);
+    assert_eq!(prefix.deploy_index, Some(0));
+    assert_eq!(prefix.pay_index, Some(3));
+    assert_eq!(prefix.pre_verify_indices, vec![(1, 2)]);
+    tx.validate_prefix_structure(&prefix, FRAME_TX_MAX_VERIFY_GAS)
+        .expect("DeployOnlyVerifyPay with pre_verify before exec should be structurally valid");
+}
+
+#[test]
+fn prefix_shape_deploy_only_verify_pay_with_pre_verify_before_pay() {
+    let tx = base_frame_tx_with_frames(vec![
+        deploy_frame(),
+        only_verify_frame(),
+        pre_verify_frame(payer_addr()),
+        pay_frame_to(payer_addr()),
+    ]);
+    let prefix = tx
+        .validation_prefix()
+        .expect("should recognize DeployOnlyVerifyPay with pre_verify before pay");
+    assert_eq!(prefix.shape, PrefixShape::DeployOnlyVerifyPay);
+    assert_eq!(prefix.frame_indices, vec![0, 1, 2, 3]);
+    assert_eq!(prefix.deploy_index, Some(0));
+    assert_eq!(prefix.pay_index, Some(3));
+    assert_eq!(prefix.pre_verify_indices, vec![(2, 3)]);
+    tx.validate_prefix_structure(&prefix, FRAME_TX_MAX_VERIFY_GAS)
+        .expect("DeployOnlyVerifyPay with pre_verify before pay should be structurally valid");
+}
+
+#[test]
+fn prefix_shape_deploy_only_verify_pay_with_pre_verify_before_both() {
+    let tx = base_frame_tx_with_frames(vec![
+        deploy_frame(),
+        pre_verify_frame(sender_addr()),
+        only_verify_frame(),
+        pre_verify_frame(payer_addr()),
+        pay_frame_to(payer_addr()),
+    ]);
+    let prefix = tx
+        .validation_prefix()
+        .expect("should recognize DeployOnlyVerifyPay with pre_verify before both exec and pay");
+    assert_eq!(prefix.shape, PrefixShape::DeployOnlyVerifyPay);
+    assert_eq!(prefix.frame_indices, vec![0, 1, 2, 3, 4]);
+    assert_eq!(prefix.deploy_index, Some(0));
+    assert_eq!(prefix.pay_index, Some(4));
+    assert_eq!(prefix.pre_verify_indices, vec![(1, 2), (3, 4)]);
+    tx.validate_prefix_structure(&prefix, FRAME_TX_MAX_VERIFY_GAS)
+        .expect("DeployOnlyVerifyPay with pre_verify before both should be structurally valid");
 }
 
 #[test]
