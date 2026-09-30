@@ -23,13 +23,32 @@ doesn't recognize `pre_verify` shapes at all today**, so a `pre_verify`
 demo transaction can't be admitted or simulated, blocking the paymaster
 demo end-to-end.
 
-**Scope, confirmed with the user:** shape recognition + the write-gate
-that makes `pre_verify`'s state writes actually simulatable. Explicitly
-**out of scope**: EIP-8369 Profile 2 (FOCIL AA-VOPS) inclusion-list
-eligibility awareness of `pre_verify`, the canonical-paymaster exemption
-pattern, and EIP-8312 vault-sender/self-funded-UTXO interplay — none of
-these need to know about `pre_verify` for the mempool/RPC-simulate demo to
-work, and adding it there is deferred until a concrete need shows up.
+**Scope, confirmed with the user (revised from an earlier draft of this
+spec — see below):** shape recognition, plus decoupling
+`ethrex_simulateFrameTransaction`'s canonical-mempool-policy verdict from
+whether it actually runs and reports execution. Explicitly **out of
+scope**: EIP-8369 Profile 2 (FOCIL AA-VOPS) inclusion-list eligibility
+awareness of `pre_verify`, the canonical-paymaster exemption pattern, and
+EIP-8312 vault-sender/self-funded-UTXO interplay — none of these need to
+know about `pre_verify` for the demo to work, and adding it there is
+deferred until a concrete need shows up. Also out of scope: the real
+mempool's own admission path (`blockchain.rs`'s transaction-pool
+admission, backing `eth_sendRawTransaction`) — this spec touches only the
+read-only `ethrex_simulateFrameTransaction` RPC's own handler.
+
+**Revision note:** an earlier draft of this spec's Part 2 proposed
+widening `ValidationObserver`'s write-permission gate (a
+`deploy_frame_index: Option<usize>` → `write_allowed_frames: Vec<usize>`
+rename) so `pre_verify` frames could `SSTORE` like deploy frames do. That
+turned out to solve the wrong layer: `SSTORE`'s observer check restricts
+writes to the *sender's own* storage (`address == sender`, where `address`
+is the executing call frame's own address per normal EVM `SSTORE`
+semantics) — so even with that widening, a `pre_verify` frame calling out
+to an ERC-20 contract to pull a payment would still trip the check on the
+token contract's own balance-update `SSTORE`, which never touches sender's
+storage. The actual fix, below, is to stop gating execution on
+canonical-mempool-policy verdicts at all for this RPC, which sidesteps the
+problem entirely rather than trying to widen what the write-gate permits.
 
 **Confirmed non-consensus:** `validation_prefix()` /
 `validate_prefix_structure()` and `ValidationObserver` are exclusively
@@ -75,12 +94,23 @@ frame belongs to.
 `non_expiry`/`frame`/`is_default`/`is_verify`/`scope_of` closures, add:
 
 ```rust
-let target_at = |pos: usize| -> Address {
-    frame(pos).and_then(|f| f.target).unwrap_or(self.sender)
-};
+// Deliberately NOT `.unwrap_or(self.sender)`: a DEFAULT-mode frame's
+// target of `None` means CREATE-at-self-address semantics for a real
+// deploy (see `deploy_frame()`'s test fixture, which always uses `None`)
+// — resolving it to `sender` here would make an ordinary deploy frame
+// indistinguishable from a pre_verify frame targeting sender, breaking
+// existing shape recognition (verified against
+// `prefix_shape_deploy_self_verify` in
+// `test/tests/common/frame_tx_validation_tests.rs`, whose `deploy_frame()`
+// has `target: None` immediately followed by `self_verify_frame()`
+// targeting sender — with `.unwrap_or(sender)` this pair would wrongly
+// match as `SelfVerify` + pre_verify instead of `DeploySelfVerify`).
+// pre_verify candidacy therefore requires an EXPLICIT target.
+let target_at = |pos: usize| -> Option<Address> { frame(pos).and_then(|f| f.target) };
 
 // Matches an approving VERIFY frame with `expected_scope` at `pos`,
-// optionally preceded by a pre_verify frame. Returns the approving
+// optionally preceded by a pre_verify frame (a DEFAULT-mode frame with an
+// explicit target equal to the approving frame's). Returns the approving
 // frame's position, the pre_verify frame's position (if any), and the
 // next unconsumed position — or None if `pos` doesn't yield a match.
 let match_approving = |pos: usize, expected_scope: u8| -> Option<(usize, Option<usize>, usize)> {
@@ -88,6 +118,7 @@ let match_approving = |pos: usize, expected_scope: u8| -> Option<(usize, Option<
         return Some((pos, None, pos + 1));
     }
     if is_default(pos)
+        && target_at(pos).is_some()
         && is_verify(pos + 1)
         && scope_of(pos + 1) == expected_scope
         && target_at(pos) == target_at(pos + 1)
@@ -173,10 +204,13 @@ if let Some(&(_, approving_idx)) = prefix.pre_verify_indices.iter().find(|(pv, _
     if frame.mode != FrameMode::Default as u8 {
         return Err(FrameValidationError::PreVerifyNotDefaultMode { frame_index: idx });
     }
+    // Explicit `Some` only — see `target_at`'s note in the matching
+    // algorithm above for why `None` (deploy's CREATE-at-self semantics)
+    // must never be treated as "matches the approving frame's target".
     let approving_target = self.frames[approving_idx].target.unwrap_or(self.sender);
-    let pre_verify_target = frame.target.unwrap_or(self.sender);
-    if pre_verify_target != approving_target {
-        return Err(FrameValidationError::PreVerifyTargetMismatch { frame_index: idx });
+    match frame.target {
+        Some(addr) if addr == approving_target => {}
+        _ => return Err(FrameValidationError::PreVerifyTargetMismatch { frame_index: idx }),
     }
 } else {
     match prefix.deploy_index {
@@ -199,96 +233,190 @@ no-VERIFY-after-prefix, gas budget) already iterate `prefix.frame_indices`
 generically and need no change — pre_verify frames are covered
 automatically since they're included in `frame_indices`.
 
-### Part 2 — The write gate (`crates/vm/levm/src/validation_observer.rs` + `crates/vm/levm/src/vm.rs`)
+### Part 2 — Decouple canonical-policy verdict from execution (`crates/networking/rpc/ethrex.rs`)
 
-This part has no Skandha-side equivalent — Skandha never executes or
-simulates writes itself.
+This part has no Skandha-side equivalent and, after the revision above, no
+`ValidationObserver`/`vm.rs` changes at all — it is scoped entirely to
+`SimulateFrameTransactionRequest::handle` (`ethrex_simulateFrameTransaction`'s
+handler).
 
-`ValidationObserver.deploy_frame_index: Option<usize>` is today the sole
-frame index where `SSTORE`/`CREATE`/`CREATE2` are permitted during mempool
-simulation; everything else raises `FrameSimViolation::StateWriteOutsideDeploy`.
-Per the confirmed naming decision, this widens and renames:
+**The principle (the user's framing, adopted as-is):**
+`ethrex_simulateFrameTransaction`'s primary job is to answer "what happens
+if this transaction is included in a block" — that's what `execute_for_gas`
+(plain execution, `ValidationObserver` always `disabled()`, confirmed by
+reading `VM::new`'s default at `crates/vm/levm/src/vm.rs:1137` and that
+`execute_tx` never touches `validation_observer`) and the optional
+`erc7562_trace` pass already compute, and it is genuinely unrestricted —
+real consensus-equivalent execution, no ERC-7562/EIP-8141 mempool-policy
+opcode or storage restriction applies to it at all. Separately, "would
+`eth_sendRawTransaction`'s mempool accept this" is a DIFFERENT question,
+answered today by `validation_prefix()`/`validate_prefix_structure()` and
+the `ValidationObserver`-gated `simulate_prefix()` pass. Today the RPC
+handler treats a `false` answer to the second question as a reason to
+never answer the first — an early `return` at each canonical-policy check
+skips `execute_for_gas`/the trace pass entirely. That coupling is the
+actual root cause blocking the `pre_verify` demo: even after Part 1 makes
+`validation_prefix()` recognize `pre_verify`, the *separate*
+`ValidationObserver`-gated `simulate_prefix()` pass would still flag a
+policy violation for a `pre_verify` frame's ERC-20-pulling nested call
+(its target contract's own `SSTORE`, which the sender-only write-gate
+was never designed to permit — see the Revision Note above), and that
+`false` would still suppress the execution result. The fix is to make the
+canonical-policy verdict purely informational everywhere it is currently a
+gate, so a policy rejection is *reported*, never *hidden*.
 
-```rust
-pub struct ValidationObserver {
-    pub active: bool,
-    pub sender: Address,
-    /// Frame indices where SSTORE/CREATE/CREATE2 are permitted: the deploy
-    /// frame (if any) plus any recognized pre_verify frames.
-    pub write_allowed_frames: Vec<usize>,
-    pub current_frame_index: usize,
-    // ... unchanged fields ...
-}
+**What stays a hard precondition (unchanged, still gates the response
+before any of the below runs):**
+- `frame_tx.validate_static_constraints(...)` — wire-level well-formedness
+  (frame mode bytes, EIP-8250 nonce-key shape, EIP-8312 fork gating). Not a
+  policy opinion; a malformed frame transaction cannot be meaningfully
+  executed at all.
+- `frame_tx.signature_verification_cost() > max_verify_gas` — unrelated to
+  `pre_verify`; left untouched to keep this change minimal and reviewable.
+- `ethrex_vm::validate_frame_signatures(...)` — `sender` is an
+  unauthenticated wire field until this passes; simulating "what an
+  unauthenticated claimed sender's transaction does" would attribute state
+  changes to a sender who never actually signed anything, which is a
+  different and less meaningful question than the one this RPC answers.
+- The per-transaction gas-limit DoS guard (`total_gas_limit > max_allowed`)
+  — protects the RPC server's own resources, not a policy opinion about
+  the transaction; unrelated to `pre_verify`, left untouched.
 
-impl ValidationObserver {
-    pub fn new(sender: Address, write_allowed_frames: Vec<usize>, expiry_verifier: Address) -> Self { /* ... */ }
-    pub fn in_write_allowed_frame(&self) -> bool {
-        self.write_allowed_frames.contains(&self.current_frame_index)
-    }
-    // in_canonical_pay_frame, within_vops_surface, charge_code_body,
-    // record_violation: unchanged
-}
+**What becomes informational instead of gating:**
+- `frame_tx.validation_prefix()` / `validate_prefix_structure()` failing
+  (today: `return structurally_invalid(...)` at the call site around
+  `ethrex.rs:276-282`).
+- `context.blockchain.check_utxo_admission(...)` /
+  `check_recent_root_references(...)` failing (today: same early-return
+  pattern, `ethrex.rs:290-304`). **Scope note:** neither of these is
+  actually required to unblock the `pre_verify` demo — only
+  `validation_prefix()`/`simulate_prefix()` are. I'm including them because
+  the user's stated principle ("simulate what happens; report acceptance
+  separately") applies to them identically — both are "would the mempool
+  accept this" questions, not "what happens" ones, and `check_utxo_admission`/
+  `check_recent_root_references` take `frame_tx` directly (not `prefix`),
+  so they have no data dependency on prefix recognition succeeding and can
+  run/report independently either way. If you'd rather keep this change
+  minimal and leave UTXO/recent-root as hard gates (untouched), say so
+  when reviewing this spec and I'll narrow it back to just the two bullets
+  below.
+- `simulate_prefix()`'s returned `FrameValidationOutcome.passed == false`
+  (today: `return` at `ethrex.rs:340-358`, which is the specific gate that
+  blocks the `pre_verify` demo). This pass only runs at all when
+  `frame_tx.validation_prefix()` succeeded (it needs a `&ValidationPrefix`
+  to run `simulate_frame_validation_prefix` against) — when recognition
+  itself failed, there is nothing to run here, `payer` stays `null`, and
+  the accumulated violation is whatever `validation_prefix()` reported.
 
-pub enum FrameSimViolation {
-    BannedOpcode(u8),
-    StateWriteOutsideAllowedFrame,  // renamed from StateWriteOutsideDeploy
-    // ... other variants unchanged ...
-}
-```
+None of these functions themselves change — `validation_prefix()` still
+returns exactly what Part 1 defines, `ValidationObserver` still enforces
+exactly what it enforces today, `check_utxo_admission`/
+`check_recent_root_references` are untouched. Only this ONE handler's
+control flow changes: instead of returning early on any of the three
+above, it records the first failure's message into a single accumulated
+`canonical_mempool_violation: Option<String>` (first-failure-wins, same
+"never under-reject" ordering the existing code already documents) and
+continues — through `execute_for_gas` and, if requested, the trace pass —
+regardless.
 
-A `Vec<usize>` (not `HashSet`) because the prefix holds at most a handful
-of frames — linear `contains` is simpler and just as fast at this size.
+**`payer` availability.** `payer` is derived from
+`FrameValidationOutcome.accessed_paymaster`, which `simulate_prefix()`
+populates whenever `frame_tx.validation_prefix()` succeeded (a
+`ValidationPrefix` exists to run `simulate_frame_validation_prefix`
+against) — independent of whether that same pass's structural check or
+`ValidationObserver` subsequently found a violation. Confirmed by reading
+`crates/vm/backends/levm/mod.rs`'s existing admission-path equivalent: it
+computes `accessed_paymaster` from `sim.payer_address` BEFORE checking
+`vm.validation_observer.violation`, and `ValidationObserver::record_violation`
+(`validation_observer.rs`) only sets a flag — it does not abort execution,
+so a frame that both APPROVEs (establishing payer) and later trips a
+violation still ends up with `payer_address` set. So: `payer` is available
+whenever `validation_prefix()` recognized a shape, `null` only when it did
+not (no `ValidationPrefix` to simulate against at all).
 
-**Threading `pre_verify_indices` through to the observer.** Confirmed by
-reading the call chain: `crates/vm/backends/levm/mod.rs:3216` calls
-`vm.run_frame_validation_prefix(&prefix.frame_indices, prefix.deploy_index,
-canonical_pay_frame, profile_2)`, which passes `deploy_index` straight
-into `ValidationObserver::new(sender, deploy_index, expiry_verifier)` at
-`crates/vm/levm/src/vm.rs:3548`. The fix threads the same path: `mod.rs`
-builds `write_allowed_frames` from `prefix.deploy_index.into_iter().chain(
-prefix.pre_verify_indices.iter().map(|(pv, _)| *pv)).collect()` and passes
-that `Vec<usize>` in place of the bare `deploy_index` parameter;
-`run_frame_validation_prefix`'s signature changes from `deploy_index:
-Option<usize>` to `write_allowed_frames: Vec<usize>` accordingly.
+**Response schema.** `SimulateFrameTransactionResult`'s `valid`/`violation`
+fields are renamed to make the new semantics unambiguous — the old names'
+implicit "and nothing else is populated" reading would now be actively
+wrong:
+- `valid` → `canonical_mempool_valid` (unchanged type, `bool`).
+- `violation` → `canonical_mempool_violation` (unchanged type,
+  `Option<String>`).
+- `prefix_shape`, `payer`, `max_cost`: unchanged.
+- `gas_used`, `frames`, `execution_status`, `execution_error`,
+  `erc7562_trace`, `erc7562_trace_error`: unchanged types, but now
+  populated whenever `execute_for_gas`/`execute_for_trace` actually ran —
+  which, after this change, is unconditional (modulo the still-hard
+  preconditions above and, for the trace fields, the existing `{"trace":
+  true}` opt-in), independent of `canonical_mempool_valid`.
 
-**Confirmed unaffected (deploy-specific, stays keyed on `deploy_index`
-alone, not touched by this change):**
-- `crates/vm/backends/levm/mod.rs:3298` — `DeployInstalledNoCode` check
-  ("a deploy frame must leave non-empty code at the sender"). A
-  `pre_verify` frame does an arbitrary state write, not a code
-  installation, so this assertion must not fire for it.
-- `crates/blockchain/blockchain.rs:4425` — EIP-8250 keyed-nonce-domain
-  concurrency eligibility (`keyed_concurrency_verdict`'s "no deploy frame,
-  which would install code mid-flight" condition). A pre_verify frame
-  doesn't install code either, so this check is correctly indifferent to
-  it and stays keyed on `deploy_index.is_some()` alone.
+This is a rename, not an additive/back-compat change — this is a fork
+under active development (`eip8141-tracer` branch), not a stable external
+API, and the existing fields' meaning is changing regardless of name, so a
+stale name would be actively misleading to a future reader.
+
+**Explicitly out of scope for this change:** the real mempool admission
+path (`crates/blockchain/blockchain.rs`'s pool-admission code backing
+`eth_sendRawTransaction`) keeps gating on all of the same checks exactly as
+it does today — an actual submitted transaction that fails
+`validate_prefix_structure` or trips `ValidationObserver` is still
+rejected from the pool. This spec changes only the read-only,
+introspection-oriented `ethrex_simulateFrameTransaction` RPC.
 
 ## Testing
 
-Rust unit tests in `crates/common/types/transaction.rs`'s existing test
-module (mirroring its current shape-matching test style) covering:
-- Each of the 4 canonical shapes, unchanged (regression).
+**Part 1 — shape recognition.** Tests live in
+`test/tests/common/frame_tx_validation_tests.rs` (the migrated home of
+`validation_prefix()`/`validate_prefix_structure()`'s existing tests —
+confirmed by reading that file's own header comment and its
+`prefix_shape_*` tests; `crates/common/types/transaction.rs`'s own
+`#[cfg(test)] mod tests` is a separate module for unrelated tests, e.g.
+blob-gas accounting). Reuse its existing helper builders (`self_verify_frame`,
+`only_verify_frame`, `pay_frame`, `deploy_frame`, `base_frame_tx_with_frames`,
+`sender_addr`), adding one new one (`pre_verify_frame(target)`):
+- Each of the 4 canonical shapes, unchanged (regression — already covered
+  by existing tests, no new test needed).
 - Each of the 8 pre_verify-augmented shapes (pre_verify before the sole
   approving frame in `SelfVerify`/`DeploySelfVerify`; before `exec` only,
-  `pay` only, and both, in `OnlyVerifyPay`/`DeployOnlyVerifyPay`).
-- The deploy/pre_verify disambiguation: a leading DEFAULT frame that
-  target-matches the next approving frame is recognized as pre_verify,
-  never deploy (regression-equivalent of Skandha's two Important-#2 fix
-  tests).
-- `validate_prefix_structure` rejecting a pre_verify frame in VERIFY mode
-  (`PreVerifyNotDefaultMode`) and a pre_verify frame whose target doesn't
-  match its approving frame (`PreVerifyTargetMismatch`).
-- `ValidationObserver`/write-gate: an `SSTORE` inside a recognized
-  pre_verify frame is permitted; an `SSTORE` in any other non-deploy frame
-  is still rejected (`StateWriteOutsideAllowedFrame`) — this needs an
-  integration-level test through `run_frame_validation_prefix` (or
-  whatever the plan finds is the narrowest existing test seam), not just
-  a `ValidationObserver` unit test, since the interesting behavior is the
-  opcode-dispatch-time check, not the struct's own methods.
+  `pay` only, and both, in `OnlyVerifyPay`/`DeployOnlyVerifyPay`), each
+  asserting `prefix.shape`, `frame_indices`, `deploy_index`, `pay_index`,
+  AND `pre_verify_indices`, plus a passing `validate_prefix_structure`
+  call — mirroring `prefix_shape_self_verify`'s existing assertion style.
+  The `SelfVerify`+pre_verify and `DeploySelfVerify`+pre_verify cases
+  together are the deploy/pre_verify disambiguation regression coverage
+  (asserting `deploy_index` comes out `None` vs. `Some(0)` correctly).
+- `PreVerifyNotDefaultMode`/`PreVerifyTargetMismatch`: NOT given dedicated
+  tests, matching this file's own established convention — confirmed by
+  checking that the structurally-analogous, already-existing
+  `DeployNotDefaultMode`/`MultipleDeploys` errors have no dedicated tests
+  either, since (like those) they are unreachable via
+  `validation_prefix()`'s own construction and only defend against a
+  hand-built, bypassing `ValidationPrefix`.
 
-No new fixtures/genesis/devnet changes are needed for these — existing
-frame-construction test helpers in `transaction.rs`'s test module already
-build synthetic `FrameTransaction`s frame-by-frame.
+**Part 2 — decoupled canonical verdict.** Tests live in
+`test/tests/rpc/simulate_frame_transaction_tests.rs` (confirmed present;
+full read deferred to the implementation plan). New coverage needed:
+- A transaction whose prefix is a recognized `pre_verify` shape and whose
+  execution would trip a canonical-mempool-policy violation (the
+  ERC-20-pull scenario, or any other existing violation-producing fixture
+  already in this test file, reused for minimal new setup) still returns
+  populated `gas_used`/`frames`/`execution_status` (and `erc7562_trace`
+  when `{"trace": true}` is passed), with `canonical_mempool_valid: false`
+  and `canonical_mempool_violation: Some(...)`.
+- `payer` is still populated in that same case (proving payer detection
+  survived the decoupling).
+- A transaction whose `validation_prefix()` fails outright (genuinely
+  unrecognized, not a `pre_verify` case) still returns populated
+  `gas_used`/`frames` with `payer: null` and `prefix_shape: null`.
+- Regression: an ordinary valid, canonical-policy-passing transaction
+  (existing test fixtures) still reports `canonical_mempool_valid: true`,
+  `canonical_mempool_violation: null`, matching prior `valid`/`violation`
+  behavior under the renamed fields.
+
+No new fixtures/genesis/devnet changes are needed for either part —
+existing frame-construction test helpers already build synthetic
+`FrameTransaction`s frame-by-frame, and Part 2's RPC tests run against the
+existing test-node/throwaway-state harness already used by that file's
+other tests.
 
 ## Build/CI note
 
