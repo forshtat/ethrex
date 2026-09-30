@@ -3088,20 +3088,21 @@ impl FrameTransaction {
         // with an explicit target equal to the approving frame's). Returns
         // the approving frame's position, the pre_verify frame's position
         // (if any), and the next unconsumed position.
-        let match_approving = |pos: usize, expected_scope: u8| -> Option<(usize, Option<usize>, usize)> {
-            if is_verify(pos) && scope_of(pos) == expected_scope {
-                return Some((pos, None, pos + 1));
-            }
-            if is_default(pos)
-                && target_at(pos).is_some()
-                && is_verify(pos + 1)
-                && scope_of(pos + 1) == expected_scope
-                && target_at(pos) == target_at(pos + 1)
-            {
-                return Some((pos + 1, Some(pos), pos + 2));
-            }
-            None
-        };
+        let match_approving =
+            |pos: usize, expected_scope: u8| -> Option<(usize, Option<usize>, usize)> {
+                if is_verify(pos) && scope_of(pos) == expected_scope {
+                    return Some((pos, None, pos + 1));
+                }
+                if is_default(pos)
+                    && target_at(pos).is_some()
+                    && is_verify(pos + 1)
+                    && scope_of(pos + 1) == expected_scope
+                    && target_at(pos) == target_at(pos + 1)
+                {
+                    return Some((pos + 1, Some(pos), pos + 2));
+                }
+                None
+            };
 
         if non_expiry.is_empty() {
             return Err(FrameValidationError::UnrecognizedPrefix);
@@ -3234,7 +3235,9 @@ impl FrameTransaction {
                 match frame.target {
                     Some(addr) if addr == approving_target => {}
                     _ => {
-                        return Err(FrameValidationError::PreVerifyTargetMismatch { frame_index: idx });
+                        return Err(FrameValidationError::PreVerifyTargetMismatch {
+                            frame_index: idx,
+                        });
                     }
                 }
             } else {
@@ -3427,7 +3430,9 @@ pub enum FrameValidationError {
     VerifyGasBudgetExceeded { actual: u64, limit: u64 },
     #[error("frame {frame_index}: pre_verify frame must use DEFAULT execution mode")]
     PreVerifyNotDefaultMode { frame_index: usize },
-    #[error("frame {frame_index}: pre_verify frame target does not match the approving frame it precedes")]
+    #[error(
+        "frame {frame_index}: pre_verify frame target does not match the approving frame it precedes"
+    )]
     PreVerifyTargetMismatch { frame_index: usize },
 }
 

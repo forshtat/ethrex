@@ -233,8 +233,8 @@ async fn hegota_context() -> RpcApiContext {
         .collect(),
         ..Default::default()
     };
-    let mut store = Store::new("simulate-frame-tx-hegota-test", EngineType::InMemory)
-        .expect("build store");
+    let mut store =
+        Store::new("simulate-frame-tx-hegota-test", EngineType::InMemory).expect("build store");
     store
         .add_initial_state(genesis)
         .await
@@ -302,7 +302,8 @@ async fn simulate_with_trace_true_returns_a_non_empty_erc7562_trace() {
     .await;
 
     assert_eq!(
-        result["canonicalMempoolValid"], json!(true),
+        result["canonicalMempoolValid"],
+        json!(true),
         "fixture must fully validate and execute for this test to be meaningful: {result}"
     );
     let trace = result["erc7562Trace"]
@@ -338,7 +339,8 @@ async fn simulate_without_trace_reports_null_and_matches_trace_false() {
     .await;
 
     assert_eq!(
-        omitted["canonicalMempoolValid"], json!(true),
+        omitted["canonicalMempoolValid"],
+        json!(true),
         "fixture must fully validate and execute for this test to be meaningful: {omitted}"
     );
     assert_eq!(
@@ -402,7 +404,8 @@ async fn simulate_reports_max_cost_even_when_a_gate_rejects() {
 /// (`BannedOpcode`) along the way.
 fn approve_with_banned_timestamp_code() -> Bytes {
     Bytes::from(vec![
-        0x42, 0x50, // TIMESTAMP, POP
+        0x42,
+        0x50, // TIMESTAMP, POP
         0x60,
         APPROVE_EXECUTION_AND_PAYMENT,
         0x60,
