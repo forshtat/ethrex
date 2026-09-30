@@ -125,7 +125,9 @@ struct SimulateFrameTransactionResult {
     /// slots, EXTCODE access, contract sizes, Keccak preimages), one [`FrameEntry`]
     /// per frame in the transaction. Populated only when the caller opted in with
     /// the third param `{"trace": true}` AND `execute_for_gas` actually ran and
-    /// succeeded (`gas_used.is_some()`); `null` otherwise. Omitting `trace` (or
+    /// succeeded (`frames.is_some()`, the exact condition `handle` checks —
+    /// equivalent in practice to `gas_used.is_some()`, since `execute_for_gas`
+    /// always returns both or neither); `null` otherwise. Omitting `trace` (or
     /// passing `{"trace": false}`) never constructs the tracer or runs the extra
     /// pass this field requires, so untraced callers pay nothing for this field's
     /// existence.
@@ -135,7 +137,7 @@ struct SimulateFrameTransactionResult {
     /// `erc7562_trace` can be `null` (tracing not requested, `execute_for_gas`
     /// did not run or did not succeed, or the separate trace pass in
     /// [`SimulateFrameTransactionRequest::execute_for_trace`] itself failed).
-    /// Populated only when `self.trace == true` AND `gas_used.is_some()` AND
+    /// Populated only when `self.trace == true` AND `frames.is_some()` AND
     /// the trace pass failed — `null` in every other case, including when
     /// `erc7562_trace` is present (a successful trace pass).
     erc7562_trace_error: Option<String>,
