@@ -3506,6 +3506,7 @@ mod frame_validation_prefix_tests {
             frame_indices: vec![0, 1],
             deploy_index: Some(0),
             pay_index: Some(1),
+            pre_verify_indices: Vec::new(),
         };
         let outcome = LEVM::simulate_frame_validation_prefix(
             &tx,
@@ -3544,6 +3545,7 @@ mod frame_validation_prefix_tests {
             frame_indices: vec![0],
             deploy_index: None,
             pay_index: Some(0),
+            pre_verify_indices: Vec::new(),
         };
         let outcome = LEVM::simulate_frame_validation_prefix(
             &tx,
@@ -3597,6 +3599,7 @@ mod frame_validation_prefix_tests {
             frame_indices: vec![0],
             deploy_index: None,
             pay_index: Some(0),
+            pre_verify_indices: Vec::new(),
         };
         let outcome = LEVM::simulate_frame_validation_prefix(
             &tx,
@@ -3697,6 +3700,7 @@ mod frame_validation_prefix_tests {
             frame_indices: vec![0],
             deploy_index: None,
             pay_index: Some(0),
+            pre_verify_indices: Vec::new(),
         };
         let surface = FocilVopsSurface {
             payer: sender,
@@ -3747,6 +3751,7 @@ mod frame_validation_prefix_tests {
             frame_indices: vec![0],
             deploy_index: None,
             pay_index: Some(0),
+            pre_verify_indices: Vec::new(),
         };
         let outcome = LEVM::simulate_frame_validation_prefix(
             &tx,
@@ -3783,6 +3788,7 @@ mod frame_validation_prefix_tests {
             frame_indices: vec![0],
             deploy_index: None,
             pay_index: Some(0),
+            pre_verify_indices: Vec::new(),
         };
         let surface = FocilVopsSurface {
             payer: sender,
@@ -3825,6 +3831,7 @@ mod frame_validation_prefix_tests {
             frame_indices,
             deploy_index,
             pay_index,
+            pre_verify_indices: Vec::new(),
         };
         LEVM::simulate_frame_validation_prefix(
             tx,

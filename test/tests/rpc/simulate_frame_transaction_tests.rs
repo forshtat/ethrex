@@ -492,12 +492,30 @@ async fn simulate_reports_execution_even_when_canonical_mempool_policy_rejects()
 
 #[tokio::test]
 async fn simulate_reports_execution_even_when_prefix_is_unrecognized() {
-    // flags: 0 matches no shape's scope requirement at position 0, so
-    // validation_prefix() returns UnrecognizedPrefix outright — no
-    // ValidationPrefix exists at all, so payer/prefixShape stay null, but
-    // execution still runs and is still reported.
+    // Two DEFAULT frames targeting unrelated, codeless addresses (neither
+    // equal to the sender nor to each other), inserted before the
+    // self_verify frame: validation_prefix() recognizes none of the four
+    // shapes (the deploy-shape attempts need the SECOND non-expiry frame to
+    // be the approving VERIFY frame, which it isn't here), so
+    // canonicalMempoolValid is false and payer/prefixShape stay null. But a
+    // DEFAULT frame targeting a codeless, non-delegated, non-precompile
+    // address executes as a no-op, so the transaction still executes
+    // successfully end to end and gasUsed/executionStatus are still
+    // reported.
     let mut tx = valid_self_verify_frame_tx();
-    tx.frames[0].flags = 0;
+    let unrelated_a = Address::from_low_u64_be(0xAAAA);
+    let unrelated_b = Address::from_low_u64_be(0xBBBB);
+    let noop_default_frame = |target: Address| Frame {
+        mode: FrameMode::Default as u8,
+        flags: 0x00,
+        target: Some(target),
+        gas_limit: 21_000,
+        state_limit: 0,
+        value: U256::zero(),
+        data: Bytes::new(),
+    };
+    tx.frames.insert(0, noop_default_frame(unrelated_b));
+    tx.frames.insert(0, noop_default_frame(unrelated_a));
 
     let result = simulate_in(hegota_context().await, tx, None).await;
 
