@@ -145,8 +145,10 @@ async fn simulate_rejects_nonce_keys_that_are_not_strictly_increasing() {
 
     let result = simulate(tx).await;
 
-    assert_eq!(result["valid"], json!(false));
-    let violation = result["violation"].as_str().expect("violation");
+    assert_eq!(result["canonicalMempoolValid"], json!(false));
+    let violation = result["canonicalMempoolViolation"]
+        .as_str()
+        .expect("canonicalMempoolViolation");
     assert!(
         violation.contains("nonce_keys"),
         "expected a nonce-key violation, got: {violation}"
@@ -159,8 +161,10 @@ async fn simulate_rejects_an_unauthenticated_sender() {
     // recovers to it. An empty SECP256K1 signature can never do that.
     let result = simulate(self_verify_tx()).await;
 
-    assert_eq!(result["valid"], json!(false));
-    let violation = result["violation"].as_str().expect("violation");
+    assert_eq!(result["canonicalMempoolValid"], json!(false));
+    let violation = result["canonicalMempoolViolation"]
+        .as_str()
+        .expect("canonicalMempoolViolation");
     assert!(
         violation.contains("signature"),
         "expected a signature violation, got: {violation}"
@@ -298,7 +302,7 @@ async fn simulate_with_trace_true_returns_a_non_empty_erc7562_trace() {
     .await;
 
     assert_eq!(
-        result["valid"], json!(true),
+        result["canonicalMempoolValid"], json!(true),
         "fixture must fully validate and execute for this test to be meaningful: {result}"
     );
     let trace = result["erc7562Trace"]
@@ -334,7 +338,7 @@ async fn simulate_without_trace_reports_null_and_matches_trace_false() {
     .await;
 
     assert_eq!(
-        omitted["valid"], json!(true),
+        omitted["canonicalMempoolValid"], json!(true),
         "fixture must fully validate and execute for this test to be meaningful: {omitted}"
     );
     assert_eq!(
@@ -380,11 +384,141 @@ async fn simulate_reports_max_cost_even_when_a_gate_rejects() {
 
     let result = simulate(tx).await;
 
-    assert_eq!(result["valid"], json!(false));
+    assert_eq!(result["canonicalMempoolValid"], json!(false));
     assert!(
         result["maxCost"]
             .as_str()
             .is_some_and(|c| c.starts_with("0x")),
         "maxCost must be reported on every path"
+    );
+}
+
+/// `PUSH1 0x42 (TIMESTAMP)... ` — actually: TIMESTAMP, POP (a banned opcode
+/// outside the expiry verifier), then the same APPROVE sequence
+/// `approve_execution_and_payment_code` uses. The frame is recognized as a
+/// valid `SelfVerify` shape and DOES establish a payer (APPROVE still runs —
+/// `ValidationObserver::record_violation` only sets a flag, it does not
+/// abort execution), but trips a canonical-mempool-policy violation
+/// (`BannedOpcode`) along the way.
+fn approve_with_banned_timestamp_code() -> Bytes {
+    Bytes::from(vec![
+        0x42, 0x50, // TIMESTAMP, POP
+        0x60,
+        APPROVE_EXECUTION_AND_PAYMENT,
+        0x60,
+        0x00,
+        0x60,
+        0x00,
+        0xAA, // APPROVE
+        0x00, // STOP
+    ])
+}
+
+#[tokio::test]
+async fn simulate_reports_execution_even_when_canonical_mempool_policy_rejects() {
+    let genesis = Genesis {
+        config: ChainConfig {
+            chain_id: 0,
+            shanghai_time: Some(0),
+            amsterdam_time: Some(0),
+            hegota_time: Some(0),
+            ..Default::default()
+        },
+        gas_limit: 100_000_000,
+        alloc: [(
+            HEGOTA_SENDER,
+            GenesisAccount {
+                code: approve_with_banned_timestamp_code(),
+                storage: BTreeMap::new(),
+                balance: U256::zero(),
+                nonce: 0,
+            },
+        )]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    };
+    let mut store = Store::new(
+        "simulate-frame-tx-policy-violation-test",
+        EngineType::InMemory,
+    )
+    .expect("build store");
+    store
+        .add_initial_state(genesis)
+        .await
+        .expect("genesis state");
+    let context = default_context_with_storage(store).await;
+
+    let result = simulate_in(context, valid_self_verify_frame_tx(), None).await;
+
+    assert_eq!(
+        result["canonicalMempoolValid"],
+        json!(false),
+        "TIMESTAMP outside the expiry verifier must be a canonical-policy violation: {result}"
+    );
+    let violation = result["canonicalMempoolViolation"]
+        .as_str()
+        .expect("canonicalMempoolViolation must be present");
+    assert!(
+        violation.contains("BannedOpcode") || violation.contains("0x42"),
+        "expected a banned-opcode violation, got: {violation}"
+    );
+    assert_eq!(
+        result["prefixShape"],
+        json!("SelfVerify"),
+        "the shape is still recognized despite the policy violation: {result}"
+    );
+    assert_eq!(
+        result["payer"],
+        json!(format!("{HEGOTA_SENDER:#x}")),
+        "APPROVE still runs before the violation is checked, so payer is still established: {result}"
+    );
+    assert!(
+        result["gasUsed"].is_string(),
+        "execution must still be reported despite the policy violation: {result}"
+    );
+    assert!(
+        result["frames"].is_array(),
+        "per-frame results must still be reported despite the policy violation: {result}"
+    );
+    assert!(
+        result["executionStatus"].is_string(),
+        "execution status must still be reported despite the policy violation: {result}"
+    );
+}
+
+#[tokio::test]
+async fn simulate_reports_execution_even_when_prefix_is_unrecognized() {
+    // flags: 0 matches no shape's scope requirement at position 0, so
+    // validation_prefix() returns UnrecognizedPrefix outright — no
+    // ValidationPrefix exists at all, so payer/prefixShape stay null, but
+    // execution still runs and is still reported.
+    let mut tx = valid_self_verify_frame_tx();
+    tx.frames[0].flags = 0;
+
+    let result = simulate_in(hegota_context().await, tx, None).await;
+
+    assert_eq!(
+        result["canonicalMempoolValid"],
+        json!(false),
+        "flags: 0 matches no recognized shape: {result}"
+    );
+    assert_eq!(
+        result["prefixShape"],
+        Value::Null,
+        "an unrecognized prefix has no shape to report: {result}"
+    );
+    assert_eq!(
+        result["payer"],
+        Value::Null,
+        "an unrecognized prefix has no ValidationPrefix to establish a payer from: {result}"
+    );
+    assert!(
+        result["gasUsed"].is_string(),
+        "execution must still be reported for an unrecognized prefix: {result}"
+    );
+    assert!(
+        result["executionStatus"].is_string(),
+        "execution status must still be reported for an unrecognized prefix: {result}"
     );
 }

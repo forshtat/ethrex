@@ -29,11 +29,15 @@ use crate::{
     utils::RpcErr,
 };
 
-/// `ethrex_simulateFrameTransaction` — dry-run the EIP-8141 validation prefix
-/// (the same check the mempool runs on `eth_sendRawTransaction`) plus a full
-/// multi-frame execution, WITHOUT submitting the transaction, so a client can
-/// learn whether a frame transaction is valid and how much gas it consumes
-/// before sending it.
+/// `ethrex_simulateFrameTransaction` — run a full multi-frame execution of
+/// the given EIP-8141 frame transaction against `block` (default `latest`),
+/// WITHOUT submitting it, reporting what actually happens (gas used,
+/// per-frame outcome, and optionally a full opcode trace). Separately
+/// reports whether the transaction would be accepted by this node's
+/// canonical mempool policy (`canonicalMempoolValid`/
+/// `canonicalMempoolViolation`) — a DIFFERENT question that does not gate
+/// the execution results above: a transaction the mempool would reject
+/// still gets a full, accurate execution report here.
 #[derive(Debug)]
 pub struct SimulateFrameTransactionRequest {
     /// Decoded type-`0x06` frame transaction (validated in `parse`).
@@ -62,81 +66,91 @@ struct SimulateFrameTransactionOptions {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SimulateFrameTransactionResult {
-    /// Whether every frame-specific admission gate passed: EIP-8141 static
-    /// constraints and signature authentication, EIP-8250 nonce-key rules,
-    /// EIP-8272 recent-root references, EIP-8312 UTXO openings, and the
-    /// validation-prefix simulation — the same checks the mempool runs, in the
-    /// same order, so a `false` never under-rejects.
-    ///
-    /// Still NECESSARY but not SUFFICIENT for admission: the gates shared with
-    /// every other transaction type (linear nonce, fee floor, wire size) and the
-    /// per-sender pending-frame-transaction rule are not replayed here.
-    valid: bool,
+    /// Whether every canonical-mempool admission gate passed: EIP-8141
+    /// static constraints and signature authentication, EIP-8250 nonce-key
+    /// rules, EIP-8272 recent-root references, EIP-8312 UTXO openings, and
+    /// the validation-prefix recognition/structural/trace checks — the same
+    /// checks the mempool runs, in the same order. Purely informational: a
+    /// `false` here does NOT prevent `gas_used`/`frames`/`erc7562_trace`
+    /// from being populated below (see those fields' docs) — this field
+    /// answers "would `eth_sendRawTransaction`'s mempool accept this", a
+    /// DIFFERENT question from "what happens if it executes", which this
+    /// RPC always answers once the transaction is decodable and its
+    /// signature authenticates (see the hard-precondition gates in
+    /// `handle`).
+    canonical_mempool_valid: bool,
     /// Recognized validation-prefix shape, or `null` if the prefix is
-    /// structurally invalid.
+    /// structurally unrecognized (`validation_prefix()` itself failed —
+    /// note this is a STRICTER condition than `canonical_mempool_valid ==
+    /// false`: a recognized-but-structurally-invalid or
+    /// recognized-but-policy-violating prefix still reports its shape
+    /// here).
     prefix_shape: Option<String>,
-    /// The payer (paymaster or self-funded sender) established by the prefix,
-    /// or `null` if none was established.
+    /// The payer (paymaster or self-funded sender) established by the
+    /// prefix, or `null` if the prefix was never recognized at all (no
+    /// `ValidationPrefix` to simulate against) or no payer was
+    /// established. Available even when `canonical_mempool_valid` is
+    /// `false` for any OTHER reason (a structural or observer-trace
+    /// violation) — payer tracking and policy enforcement are independent
+    /// within the same simulation pass.
     payer: Option<Address>,
     /// The transaction's max cost (TXPARAM `0x06`), as a `0x`-hex wei value.
     /// Always present — it is a pure function of the transaction fields.
     max_cost: String,
-    /// Reason the transaction is invalid — a validation-prefix failure or a
-    /// pre-simulation gate such as the per-transaction gas cap. `null` when
-    /// `valid` is true.
-    violation: Option<String>,
-    /// Accurate total gas used across all frames, as `0x`-hex. `null` when the
-    /// prefix is invalid, the tx exceeds the simulation gas cap, or the full
-    /// execution errored.
+    /// Why `canonical_mempool_valid` is `false` — the first canonical-policy
+    /// check that failed, in the same order the mempool applies them
+    /// (never under-reports a passing check as failing). `null` when
+    /// `canonical_mempool_valid` is `true`.
+    canonical_mempool_violation: Option<String>,
+    /// Accurate total gas used across all frames, as `0x`-hex. Populated
+    /// whenever `execute_for_gas` ran and produced a result — which,
+    /// unlike `canonical_mempool_valid`, happens unconditionally once the
+    /// hard preconditions in `handle` pass (decodable tx, authenticated
+    /// signature, signature-cost and total-gas-limit budgets) —
+    /// independent of the canonical-mempool verdict above. `null` only when
+    /// one of those hard preconditions failed, or `execute_for_gas` itself
+    /// errored (see `execution_error`).
     gas_used: Option<String>,
-    /// Per-frame gas used and success, when a full execution ran; `null`
-    /// otherwise.
+    /// Per-frame gas used and success. Same availability as `gas_used`.
     frames: Option<Vec<FrameExecResult>>,
     /// Top-level execution summary: `"success"` (every frame succeeded) or
     /// `"reverted"` (at least one frame did not — see per-frame `frames`).
-    /// `null` if the full execution was not run or errored.
+    /// Same availability as `gas_used`.
     execution_status: Option<String>,
-    /// Error string if the full execution could not run or complete (e.g. the
-    /// tx exceeds the simulation gas cap, the body reverted the whole tx under
-    /// the frame-tx exclusion model, or the payer was underfunded). `null`
-    /// otherwise.
+    /// Error string if `execute_for_gas` itself could not run or complete.
+    /// `null` when it succeeded (see `gas_used`) or was never attempted (a
+    /// hard precondition failed first).
     execution_error: Option<String>,
     /// Full `Erc7562FrameTracer` trace (opcode counts, accessed storage/transient
     /// slots, EXTCODE access, contract sizes, Keccak preimages), one [`FrameEntry`]
     /// per frame in the transaction. Populated only when the caller opted in with
-    /// the third param `{"trace": true}` AND the full execution actually ran
-    /// (`valid: true` and `frames.is_some()`); `null` otherwise -- including when
-    /// tracing was requested but the transaction was rejected before any execution
-    /// (an invalid prefix or the per-tx gas cap). Omitting `trace` (or passing
-    /// `{"trace": false}`) never constructs the tracer or runs the extra pass this
-    /// field requires, so untraced callers pay nothing for this field's existence.
+    /// the third param `{"trace": true}` AND `execute_for_gas` actually ran and
+    /// succeeded (`gas_used.is_some()`); `null` otherwise. Omitting `trace` (or
+    /// passing `{"trace": false}`) never constructs the tracer or runs the extra
+    /// pass this field requires, so untraced callers pay nothing for this field's
+    /// existence.
     erc7562_trace: Option<Vec<FrameEntry>>,
     /// Stringified error from the trace pass, distinguishing "tracing was
     /// requested but the trace pass itself failed" from every other reason
-    /// `erc7562_trace` can be `null` (tracing not requested, the prefix was
-    /// invalid, the tx exceeded the gas cap, or the trace pass simply was not
-    /// reached). Populated only when `self.trace == true` AND the gas pass
-    /// succeeded (`frames.is_some()`, so the transaction is known to execute)
-    /// AND the separate trace pass in [`SimulateFrameTransactionRequest::execute_for_trace`]
-    /// itself failed (a setup error constructing the throwaway state/EVM, or the
-    /// traced execution erroring) -- `null` in every other case, including when
-    /// `erc7562_trace` is present (a successful trace pass). This keeps the
-    /// field fully additive: a caller who never passes `{"trace": true}`, or
-    /// whose trace pass succeeds, always sees this as `null`/absent, byte-for-byte
-    /// unchanged from before this field existed.
+    /// `erc7562_trace` can be `null` (tracing not requested, `execute_for_gas`
+    /// did not run or did not succeed, or the separate trace pass in
+    /// [`SimulateFrameTransactionRequest::execute_for_trace`] itself failed).
+    /// Populated only when `self.trace == true` AND `gas_used.is_some()` AND
+    /// the trace pass failed — `null` in every other case, including when
+    /// `erc7562_trace` is present (a successful trace pass).
     erc7562_trace_error: Option<String>,
     /// Which validation-prefix frame failed and why, present only when the prefix
     /// failed inside a frame (a revert or an exceptional halt). Its fields are
-    /// flattened into this object and are absent otherwise. `violation` still
-    /// carries the coarse text (`"validation prefix frame reverted"`), unchanged.
+    /// flattened into this object and are absent otherwise. `canonical_mempool_violation`
+    /// still carries the coarse text (`"validation prefix frame reverted"`), unchanged.
     #[serde(flatten)]
     failure: Option<PrefixFailureDetail>,
 }
 
 /// Machine-readable detail of a validation-prefix frame failure, flattened into
-/// [`SimulateFrameTransactionResult`]. `violation` says a prefix frame failed;
-/// this says which frame and why, so a client can tell "the payer has no funds"
-/// from "the verification ran out of gas" from "it reverted".
+/// [`SimulateFrameTransactionResult`]. `canonical_mempool_violation` says a prefix
+/// frame failed; this says which frame and why, so a client can tell "the payer
+/// has no funds" from "the verification ran out of gas" from "it reverted".
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PrefixFailureDetail {
@@ -368,23 +382,16 @@ impl RpcHandler for SimulateFrameTransactionRequest {
         );
         let max_cost = to_hex_u256(frame_tx.max_cost(blob_base_fee));
 
-        // Run the frame-specific admission gates in the order the mempool applies
-        // them, so `valid` answers the question a sender actually asks — "will
-        // this be accepted?" — rather than only "is the prefix well-formed?".
-        // Everything up to the prefix simulation is stateless or a bounded number
-        // of native storage reads.
-        //
-        // EIP-8141 static constraints, which is also where EIP-8250's nonce-key
-        // rules and EIP-8312's fork gating are enforced.
+        // Hard preconditions (unchanged): a transaction that fails these
+        // cannot be meaningfully executed at all -- not canonical-mempool
+        // policy opinions, but preconditions for the simulation being
+        // meaningful. See this file's design spec for why each stays a gate.
         let config = context.storage.get_chain_config();
         let utxo_frames_active = config.is_utxo_frames_activated(header.timestamp);
         if let Err(error) = frame_tx.validate_static_constraints(utxo_frames_active) {
             return structurally_invalid(error, max_cost);
         }
 
-        // EIP-8141 §Mempool rule #6: signature verification is charged against
-        // MAX_VERIFY_GAS, so a transaction whose signature cost alone exceeds the
-        // budget can never satisfy the prefix gas limit.
         let max_verify_gas = context.blockchain.options.max_verify_gas;
         if frame_tx.signature_verification_cost() > max_verify_gas {
             return structurally_invalid(
@@ -396,9 +403,6 @@ impl RpcHandler for SimulateFrameTransactionRequest {
             );
         }
 
-        // EIP-8141: authenticate the signature list. `sender` is an unauthenticated
-        // field until these check out, so reporting a transaction valid without
-        // this would report on a sender the submitter does not control.
         let fork = config.fork(header.timestamp);
         if !ethrex_vm::validate_frame_signatures(
             &frame_tx.signatures,
@@ -413,55 +417,18 @@ impl RpcHandler for SimulateFrameTransactionRequest {
             );
         }
 
-        // Derive and structurally validate the prefix. A structural error means
-        // the transaction is invalid without needing an EVM pass.
-        let prefix = match frame_tx.validation_prefix() {
-            Ok(prefix) => prefix,
-            Err(error) => return structurally_invalid(error.to_string(), max_cost),
-        };
-        if let Err(error) = frame_tx.validate_prefix_structure(&prefix, max_verify_gas) {
-            return structurally_invalid(error.to_string(), max_cost);
-        }
-        let prefix_shape = Some(prefix_shape_name(&prefix.shape).to_owned());
-
-        // EIP-8312 UTXO admission and EIP-8272 recent-root references. Both read
-        // head state natively rather than through the EVM, and both sit behind
-        // static validation and signature authentication for the reason the
-        // mempool orders them that way: a bounded number of storage reads must
-        // not be reachable by a transaction that fails a cheap check first.
-        if utxo_frames_active
-            && let Err(error) =
-                context
-                    .blockchain
-                    .check_utxo_admission(frame_tx, header.number, header.number + 1)
-        {
-            return structurally_invalid(error.to_string(), max_cost);
-        }
-        if let Err(error) =
-            context
-                .blockchain
-                .check_recent_root_references(frame_tx, &header, header.number)
-        {
-            return structurally_invalid(error.to_string(), max_cost);
-        }
-
-        // DoS guard, applied BEFORE any EVM work. Both the prefix simulation and
-        // the full execution below run real opcodes bounded only by the tx's own
-        // (attacker-controlled) per-frame gas limits — the prefix's MAX_VERIFY_GAS
-        // ceiling is enforced only post-hoc, so an uncapped prefix frame would burn
-        // unbounded CPU. Gate on the same per-tx cap `eth_estimateGas` uses (and
-        // that the mempool checks before its own prefix sim); a tx above it is
-        // rejected on submit (EIP-7825 / block gas limit) anyway.
-        let fork = context.storage.get_chain_config().fork(header.timestamp);
+        // DoS guard, applied BEFORE any EVM work -- still a hard gate: it
+        // protects the RPC server's own resources, not a policy opinion
+        // about the transaction.
         let max_allowed = get_max_allowed_gas_limit(header.gas_limit, fork);
         let total_gas_limit = frame_tx.total_gas_limit();
         if total_gas_limit > max_allowed {
             return to_value(SimulateFrameTransactionResult {
-                valid: false,
-                prefix_shape,
+                canonical_mempool_valid: false,
+                prefix_shape: None,
                 payer: None,
                 max_cost,
-                violation: Some(format!(
+                canonical_mempool_violation: Some(format!(
                     "total gas limit {total_gas_limit} exceeds the per-transaction gas cap {max_allowed} (EIP-7825); not simulated"
                 )),
                 gas_used: None,
@@ -474,47 +441,105 @@ impl RpcHandler for SimulateFrameTransactionRequest {
             });
         }
 
-        // Gas is bounded; run the validation-prefix simulation on a fresh,
-        // throwaway state at the requested head — the same machinery the mempool
-        // runs. Read-only: never touches the mempool or block building.
-        let outcome = self.simulate_prefix(&context, &header, &prefix)?;
-        let payer = outcome.accessed_paymaster.map(|(payer, _)| payer);
+        // Canonical-mempool policy checks, in the same order the mempool
+        // applies them -- now purely informational: `canonical_mempool_valid`/
+        // `canonical_mempool_violation` accumulate the FIRST failure (never
+        // under-reporting a passing check as failing, same as before), but
+        // no failure here skips `execute_for_gas`/the trace pass any more.
+        let mut canonical_mempool_valid = true;
+        let mut canonical_mempool_violation: Option<String> = None;
 
-        if !outcome.passed {
-            return to_value(SimulateFrameTransactionResult {
-                valid: false,
-                prefix_shape,
-                payer,
-                max_cost,
-                violation: Some(
-                    outcome
-                        .violation
-                        .unwrap_or_else(|| "validation prefix did not pass".to_owned()),
-                ),
-                gas_used: None,
-                frames: None,
-                execution_status: None,
-                execution_error: None,
-                erc7562_trace: None,
-                erc7562_trace_error: None,
-                failure: outcome
-                    .failure
-                    .as_ref()
-                    .map(|failure| PrefixFailureDetail::from_failure(failure, frame_tx.sender)),
-            });
+        let prefix = match frame_tx.validation_prefix() {
+            Ok(prefix) => match frame_tx.validate_prefix_structure(&prefix, max_verify_gas) {
+                Ok(()) => Some(prefix),
+                Err(error) => {
+                    note_violation(
+                        &mut canonical_mempool_valid,
+                        &mut canonical_mempool_violation,
+                        error.to_string(),
+                    );
+                    Some(prefix)
+                }
+            },
+            Err(error) => {
+                note_violation(
+                    &mut canonical_mempool_valid,
+                    &mut canonical_mempool_violation,
+                    error.to_string(),
+                );
+                None
+            }
+        };
+        let prefix_shape = prefix
+            .as_ref()
+            .map(|prefix| prefix_shape_name(&prefix.shape).to_owned());
+
+        // EIP-8312 UTXO admission and EIP-8272 recent-root references. Both read
+        // head state natively rather than through the EVM.
+        if utxo_frames_active
+            && let Err(error) =
+                context
+                    .blockchain
+                    .check_utxo_admission(frame_tx, header.number, header.number + 1)
+        {
+            note_violation(
+                &mut canonical_mempool_valid,
+                &mut canonical_mempool_violation,
+                error.to_string(),
+            );
+        }
+        if let Err(error) =
+            context
+                .blockchain
+                .check_recent_root_references(frame_tx, &header, header.number)
+        {
+            note_violation(
+                &mut canonical_mempool_valid,
+                &mut canonical_mempool_violation,
+                error.to_string(),
+            );
         }
 
-        // The prefix passed and gas is bounded (checked above); run a full
-        // multi-frame execution on a SEPARATE fresh state (the prefix simulation
-        // mutated its own throwaway state) for accurate total + per-frame gas.
+        // `payer` is only derivable when the prefix was at least recognized
+        // -- `simulate_prefix` needs a `&ValidationPrefix` to run against.
+        // A structural-validation failure still runs it (payer tracking and
+        // structural/observer policy are independent), but an outright
+        // recognition failure (`prefix` is `None`) has nothing to run.
+        //
+        // `failure` (which validation-prefix frame failed and why, if any)
+        // is captured here too, alongside `payer` -- both come from the same
+        // `outcome`, which only lives for the duration of this match arm.
+        let mut failure: Option<PrefixFailureDetail> = None;
+        let payer = match &prefix {
+            Some(prefix) => {
+                let outcome = self.simulate_prefix(&context, &header, prefix)?;
+                if !outcome.passed {
+                    note_violation(
+                        &mut canonical_mempool_valid,
+                        &mut canonical_mempool_violation,
+                        outcome
+                            .violation
+                            .clone()
+                            .unwrap_or_else(|| "validation prefix did not pass".to_owned()),
+                    );
+                    failure = outcome
+                        .failure
+                        .as_ref()
+                        .map(|failure| PrefixFailureDetail::from_failure(failure, frame_tx.sender));
+                }
+                outcome.accessed_paymaster.map(|(payer, _)| payer)
+            }
+            None => None,
+        };
+
+        // Always run the full execution: this is the RPC's primary job --
+        // "what happens if this transaction is included" -- independent of
+        // the canonical-mempool verdict above.
         let (gas_used, frames, execution_status, execution_error) =
             self.execute_for_gas(&context, &header, frame_tx.sender);
 
-        // Opt-in only: a caller who did not pass `{"trace": true}` never constructs
-        // the tracer or pays for this extra pass. When tracing IS requested, this
-        // runs on a THIRD fresh throwaway state -- same rationale as the gas pass
-        // running on its own separate state from the prefix simulation above -- only
-        // once the gas pass has proven the transaction actually executes.
+        // Opt-in only, and only after `execute_for_gas` has shown the
+        // transaction executes -- unchanged from before this change.
         //
         // `execute_for_trace` distinguishes "not requested" from "requested but
         // failed" via `Result` rather than swallowing every failure into `None`,
@@ -531,18 +556,18 @@ impl RpcHandler for SimulateFrameTransactionRequest {
         };
 
         to_value(SimulateFrameTransactionResult {
-            valid: true,
+            canonical_mempool_valid,
             prefix_shape,
             payer,
             max_cost,
-            violation: None,
+            canonical_mempool_violation,
             gas_used,
             frames,
             execution_status,
             execution_error,
             erc7562_trace,
             erc7562_trace_error,
-            failure: None,
+            failure,
         })
     }
 }
@@ -658,16 +683,18 @@ impl SimulateFrameTransactionRequest {
     }
 }
 
-/// Builds the `{valid: false, ...}` response for a structurally invalid prefix
-/// (no EVM pass was run, so payer/prefixShape/gas are unknown; `maxCost` is a
-/// pure function of the tx fields and is still reported).
+/// Builds the `{canonicalMempoolValid: false, ...}` response for a
+/// transaction that fails one of `handle`'s hard preconditions (not
+/// decodable/executable at all, so no EVM pass was run and
+/// payer/prefixShape/gas are unknown; `maxCost` is a pure function of the
+/// tx fields and is still reported).
 fn structurally_invalid(violation: String, max_cost: String) -> Result<Value, RpcErr> {
     to_value(SimulateFrameTransactionResult {
-        valid: false,
+        canonical_mempool_valid: false,
         prefix_shape: None,
         payer: None,
         max_cost,
-        violation: Some(violation),
+        canonical_mempool_violation: Some(violation),
         gas_used: None,
         frames: None,
         execution_status: None,
@@ -676,6 +703,16 @@ fn structurally_invalid(violation: String, max_cost: String) -> Result<Value, Rp
         erc7562_trace_error: None,
         failure: None,
     })
+}
+
+/// Records `message` as the canonical-mempool violation only if none has
+/// been recorded yet (first-failure-wins, matching the mempool's own
+/// check ordering: the FIRST check that fails is the one reported).
+fn note_violation(valid: &mut bool, violation: &mut Option<String>, message: String) {
+    if *valid {
+        *valid = false;
+        *violation = Some(message);
+    }
 }
 
 fn to_hex_u256(value: U256) -> String {
