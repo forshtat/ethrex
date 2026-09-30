@@ -3147,40 +3147,39 @@ impl FrameTransaction {
         // ever runs.
 
         // Shape: OnlyVerifyPay — VERIFY(exec) + VERIFY(pay), no deploy.
-        if let Some((exec_pos, exec_pv, next)) = match_approving(0, APPROVE_EXECUTION) {
-            if let Some((pay_pos, pay_pv, _)) = match_approving(next, APPROVE_PAYMENT) {
-                return Ok(build(
-                    PrefixShape::OnlyVerifyPay,
-                    None,
-                    &[(exec_pos, exec_pv), (pay_pos, pay_pv)],
-                ));
-            }
+        if let Some((exec_pos, exec_pv, next)) = match_approving(0, APPROVE_EXECUTION)
+            && let Some((pay_pos, pay_pv, _)) = match_approving(next, APPROVE_PAYMENT)
+        {
+            return Ok(build(
+                PrefixShape::OnlyVerifyPay,
+                None,
+                &[(exec_pos, exec_pv), (pay_pos, pay_pv)],
+            ));
         }
         // Shape: DeployOnlyVerifyPay — DEFAULT + VERIFY(exec) + VERIFY(pay).
-        if is_default(0) {
-            if let Some((exec_pos, exec_pv, next)) = match_approving(1, APPROVE_EXECUTION) {
-                if let Some((pay_pos, pay_pv, _)) = match_approving(next, APPROVE_PAYMENT) {
-                    return Ok(build(
-                        PrefixShape::DeployOnlyVerifyPay,
-                        Some(0),
-                        &[(exec_pos, exec_pv), (pay_pos, pay_pv)],
-                    ));
-                }
-            }
+        if is_default(0)
+            && let Some((exec_pos, exec_pv, next)) = match_approving(1, APPROVE_EXECUTION)
+            && let Some((pay_pos, pay_pv, _)) = match_approving(next, APPROVE_PAYMENT)
+        {
+            return Ok(build(
+                PrefixShape::DeployOnlyVerifyPay,
+                Some(0),
+                &[(exec_pos, exec_pv), (pay_pos, pay_pv)],
+            ));
         }
         // Shape: SelfVerify — VERIFY(exec+pay), no deploy.
         if let Some((sv_pos, sv_pv, _)) = match_approving(0, APPROVE_EXECUTION_AND_PAYMENT) {
             return Ok(build(PrefixShape::SelfVerify, None, &[(sv_pos, sv_pv)]));
         }
         // Shape: DeploySelfVerify — DEFAULT + VERIFY(exec+pay).
-        if is_default(0) {
-            if let Some((sv_pos, sv_pv, _)) = match_approving(1, APPROVE_EXECUTION_AND_PAYMENT) {
-                return Ok(build(
-                    PrefixShape::DeploySelfVerify,
-                    Some(0),
-                    &[(sv_pos, sv_pv)],
-                ));
-            }
+        if is_default(0)
+            && let Some((sv_pos, sv_pv, _)) = match_approving(1, APPROVE_EXECUTION_AND_PAYMENT)
+        {
+            return Ok(build(
+                PrefixShape::DeploySelfVerify,
+                Some(0),
+                &[(sv_pos, sv_pv)],
+            ));
         }
 
         Err(FrameValidationError::UnrecognizedPrefix)
