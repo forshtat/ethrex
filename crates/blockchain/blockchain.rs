@@ -258,18 +258,25 @@ pub struct Blockchain {
     /// pushed here (by `ethrex_submitPrivilegedFrameTransaction`) bypass the
     /// normal mempool's `validate_transaction` admission pipeline entirely -
     /// there is no fee-competitiveness check, no paymaster-reservation
-    /// accounting, no expiry-deadline check, nothing. Drained once per
-    /// payload build (`build_payload_inner`) and applied the same way
-    /// EIP-7805 (FOCIL) inclusion-list transactions already are: tried
-    /// directly against the accumulating block state, silently skipped if
-    /// they don't apply. Never retried across builds - a transaction not
-    /// caught by the very next payload build is simply gone, by design
-    /// ("current block only"). The RPC method that feeds this is
-    /// unauthenticated and un-rate-limited: it MUST NOT be exposed on
-    /// anything but a trusted, localhost-only deployment where the calling
-    /// frame-transaction sidecar has already run its own full
-    /// ERC-7562-derived admission checks before calling it.
-    privileged_frame_txs: std::sync::Mutex<Vec<Transaction>>,
+    /// accounting, no expiry-deadline check, nothing. Each entry carries an
+    /// optional target block number: `None` keeps the original "very next
+    /// payload build only" behavior; `Some(n)` holds the transaction back
+    /// (tried by no build whose `header.number < n`) until a build at or
+    /// past block `n`, for a test/demo caller that wants a transaction to
+    /// sit un-included for a controlled number of blocks (e.g. to observe a
+    /// bundler's own `maxSubmitAttempts`-driven "dropped" handling) - see
+    /// `drain_privileged_transactions`. Applied the same way EIP-7805
+    /// (FOCIL) inclusion-list transactions already are: tried directly
+    /// against the accumulating block state, silently skipped if they don't
+    /// apply. Never retried past its one eligible build - a transaction not
+    /// caught the first time its target block is reached is simply gone, by
+    /// design ("current block only", now "current-or-later block only" for
+    /// the delayed case). The RPC method that feeds this is unauthenticated
+    /// and un-rate-limited: it MUST NOT be exposed on anything but a
+    /// trusted, localhost-only deployment where the calling frame-
+    /// transaction sidecar has already run its own full ERC-7562-derived
+    /// admission checks before calling it.
+    privileged_frame_txs: std::sync::Mutex<Vec<(Transaction, Option<u64>)>>,
 }
 
 /// Newtype around the prewarmer's cache-handoff slot so `Blockchain` can keep
@@ -624,29 +631,43 @@ impl Blockchain {
     }
 
     /// Queues a frame transaction for privileged, no-questions-asked
-    /// inclusion in the very next payload build - see
-    /// `privileged_frame_txs`'s own doc comment for what "privileged" means
-    /// here (no admission checks at all) and why that's acceptable (a
-    /// trusted, localhost-only caller already ran its own checks).
+    /// inclusion. `target_block` of `None` means "the very next payload
+    /// build only" (original behavior); `Some(n)` holds it back until a
+    /// build at block `n` or later - see `privileged_frame_txs`'s own doc
+    /// comment for what "privileged" means here (no admission checks at
+    /// all) and why that's acceptable (a trusted, localhost-only caller
+    /// already ran its own checks).
     ///
     /// A poisoned lock (a prior panic while some other thread held it) drops
     /// the submission silently rather than panicking this thread too -
     /// consistent with `PrewarmedCache`'s own best-effort handling of the
     /// same `std::sync::Mutex` failure mode elsewhere in this file.
-    pub fn push_privileged_transaction(&self, tx: Transaction) {
+    pub fn push_privileged_transaction(&self, tx: Transaction, target_block: Option<u64>) {
         if let Ok(mut queue) = self.privileged_frame_txs.lock() {
-            queue.push(tx);
+            queue.push((tx, target_block));
         }
     }
 
-    /// Takes and clears the privileged-submission queue. Called once per
-    /// payload build (`build_payload_inner`) - whatever is not drained here
-    /// simply never gets a second attempt, which is the entire mechanism
-    /// behind "current block only". A poisoned lock is treated as an empty
-    /// queue, same reasoning as `push_privileged_transaction`.
-    fn drain_privileged_transactions(&self) -> Vec<Transaction> {
+    /// Takes and clears every queued privileged transaction eligible for a
+    /// build at `current_block` - i.e. `target_block.is_none()` or
+    /// `target_block <= Some(current_block)` - leaving anything targeting a
+    /// strictly later block still queued. Called once per payload build
+    /// (`build_payload_inner`) - whatever is drained here never gets a
+    /// second attempt, which is the entire mechanism behind "current (or,
+    /// for a delayed submission, current-or-later) block only". A poisoned
+    /// lock is treated as an empty queue, same reasoning as
+    /// `push_privileged_transaction`.
+    fn drain_privileged_transactions(&self, current_block: u64) -> Vec<Transaction> {
         match self.privileged_frame_txs.lock() {
-            Ok(mut queue) => std::mem::take(&mut *queue),
+            Ok(mut queue) => {
+                let (ready, held): (Vec<_>, Vec<_>) = std::mem::take(&mut *queue)
+                    .into_iter()
+                    .partition(|(_, target_block)| {
+                        target_block.is_none_or(|target| target <= current_block)
+                    });
+                *queue = held;
+                ready.into_iter().map(|(tx, _)| tx).collect()
+            }
             Err(_) => Vec::new(),
         }
     }

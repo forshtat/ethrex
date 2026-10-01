@@ -728,23 +728,32 @@ fn to_value(result: SimulateFrameTransactionResult) -> Result<Value, RpcErr> {
 /// `ethrex_submitPrivilegedFrameTransaction` — a demo-grade, fully
 /// unauthenticated fast path for a trusted, localhost-only caller (an
 /// EIP-8141 frame-transaction sidecar that has already run its own full
-/// ERC-7562-derived admission checks) to force a frame transaction into the
-/// very next payload build, bypassing the mempool's `validate_transaction`
-/// admission pipeline entirely.
+/// ERC-7562-derived admission checks) to force a frame transaction into a
+/// payload build, bypassing the mempool's `validate_transaction` admission
+/// pipeline entirely.
 ///
 /// This is NOT a substitute for `eth_sendRawTransaction`/the normal
 /// mempool: there is no fee-competitiveness check, no paymaster-reservation
 /// accounting, no expiry-deadline check, and no spam protection of any
-/// kind. There is also no retry across blocks: a transaction not caught by
-/// the very next payload build is simply dropped — see
+/// kind. There is also no retry past its one eligible build: a transaction
+/// not caught then is simply dropped — see
 /// `Blockchain::push_privileged_transaction`'s own doc comment for why that
-/// is the entire mechanism behind "current block only", not a bug to fix
-/// later. MUST NOT be exposed on anything but a trusted deployment where
-/// the caller is known to have already validated the transaction itself.
+/// is the entire mechanism behind "current (or, with `targetBlock`,
+/// current-or-later) block only", not a bug to fix later. MUST NOT be
+/// exposed on anything but a trusted deployment where the caller is known
+/// to have already validated the transaction itself.
 #[derive(Debug)]
 pub struct SubmitPrivilegedFrameTransactionRequest {
     /// Decoded type-`0x06` frame transaction (validated in `parse`).
     pub transaction: Transaction,
+    /// Optional second param: a 0x-prefixed hex block number. `None` (the
+    /// param omitted) keeps the original "very next payload build only"
+    /// behavior. `Some(n)` holds the transaction out of every build whose
+    /// block number is `< n`, so a test/demo caller can observe a bundler's
+    /// own "accepted but not yet included" handling for a controlled number
+    /// of blocks before it's finally tried (or, if the bundler gives up on
+    /// it first, never tried at all from the bundler's perspective).
+    pub target_block: Option<u64>,
 }
 
 impl RpcHandler for SubmitPrivilegedFrameTransactionRequest {
@@ -752,9 +761,9 @@ impl RpcHandler for SubmitPrivilegedFrameTransactionRequest {
         let params = params
             .as_ref()
             .ok_or(RpcErr::BadParams("No params provided".to_owned()))?;
-        if params.len() != 1 {
+        if params.is_empty() || params.len() > 2 {
             return Err(RpcErr::BadParams(format!(
-                "Expected one param and {} were provided",
+                "Expected one or two params and {} were provided",
                 params.len()
             )));
         }
@@ -774,7 +783,25 @@ impl RpcHandler for SubmitPrivilegedFrameTransactionRequest {
             ));
         }
 
-        Ok(SubmitPrivilegedFrameTransactionRequest { transaction })
+        let target_block = match params.get(1) {
+            None | Some(Value::Null) => None,
+            Some(value) => {
+                let hex: String = serde_json::from_value(value.clone())
+                    .map_err(|error| RpcErr::BadParams(error.to_string()))?;
+                let hex = hex.strip_prefix("0x").ok_or_else(|| {
+                    RpcErr::BadParams("targetBlock is not 0x-prefixed".to_owned())
+                })?;
+                Some(
+                    u64::from_str_radix(hex, 16)
+                        .map_err(|error| RpcErr::BadParams(error.to_string()))?,
+                )
+            }
+        };
+
+        Ok(SubmitPrivilegedFrameTransactionRequest {
+            transaction,
+            target_block,
+        })
     }
 
     async fn handle(&self, context: RpcApiContext) -> Result<Value, RpcErr> {
@@ -786,7 +813,7 @@ impl RpcHandler for SubmitPrivilegedFrameTransactionRequest {
         let hash = self.transaction.hash(&NativeCrypto);
         context
             .blockchain
-            .push_privileged_transaction(self.transaction.clone());
+            .push_privileged_transaction(self.transaction.clone(), self.target_block);
         serde_json::to_value(format!("{hash:#x}"))
             .map_err(|error| RpcErr::Internal(error.to_string()))
     }
