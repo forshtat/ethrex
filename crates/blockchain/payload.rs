@@ -635,7 +635,8 @@ impl Blockchain {
                 // node merely has to satisfy. See
                 // `Blockchain::push_privileged_transaction`'s doc comment for
                 // why nothing here is retried across builds.
-                let privileged_txs = self.drain_privileged_transactions();
+                let privileged_txs =
+                    self.drain_privileged_transactions(context.payload.header.number);
                 if !privileged_txs.is_empty() {
                     self.apply_inclusion_list_transactions(&mut context, &privileged_txs)?;
                 }
