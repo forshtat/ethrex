@@ -54,7 +54,7 @@ use crate::eth::{
     },
 };
 use crate::subscription_manager::{SubscriptionManager, SubscriptionManagerProtocol};
-use crate::testing::BuildBlockV1Request;
+use crate::testing::{BuildBlockV1Request, ValidateTransactionV1Request};
 use crate::tracing::{
     TraceBlockByHashRequest, TraceBlockByNumberRequest, TraceCallRequest, TraceTransactionRequest,
 };
@@ -1510,6 +1510,7 @@ pub async fn map_testing_requests(
 ) -> Result<Value, RpcErr> {
     match req.method.as_str() {
         "testing_buildBlockV1" => BuildBlockV1Request::call(req, context).await,
+        "testing_validateTransactionV1" => ValidateTransactionV1Request::call(req, context).await,
         unknown_testing_method => Err(RpcErr::MethodNotFound(unknown_testing_method.to_owned())),
     }
 }

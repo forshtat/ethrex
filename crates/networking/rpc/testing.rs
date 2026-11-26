@@ -1,11 +1,17 @@
+use ethrex_blockchain::AdmissionEnv;
 use ethrex_blockchain::error::ChainError;
 use ethrex_blockchain::payload::{BuildPayloadArgs, create_payload};
 use ethrex_common::types::{ELASTICITY_MULTIPLIER, Transaction};
+use ethrex_crypto::NativeCrypto;
+use std::sync::Arc;
 use ethrex_common::{Bytes, H256};
 use ethrex_rlp::error::RLPDecodeError;
 use serde_json::Value;
 
+use crate::types::block_identifier::{BlockIdentifier, BlockIdentifierOrHash};
+use crate::types::block_override::BlockOverrideSet;
 use crate::types::fork_choice::PayloadAttributesV3;
+use crate::types::state_override::StateOverrideSet;
 use crate::types::payload::{ExecutionPayload, ExecutionPayloadResponse};
 use crate::{RpcApiContext, RpcErr, RpcHandler};
 
@@ -296,5 +302,111 @@ mod tests {
         assert_eq!(payload["blockNumber"], json!("0x1"));
         assert_eq!(payload["transactions"], json!([]));
         assert_eq!(response["shouldOverrideBuilder"], json!(false));
+    }
+}
+
+/// `testing_validateTransactionV1`: asks whether this node's transaction pool would
+/// admit a transaction, against a state and head the caller supplies instead of the
+/// canonical head. Testing-only, like the rest of the `testing_` namespace.
+///
+/// Params: `[rawTx, block, stateOverrides, blockOverrides, policy]`, the last four
+/// optional; the first three after `rawTx` are shaped like `eth_call`'s, and `policy`
+/// is `{"minTip": "0x.."}`. `rawTx` is the canonical encoding. The pool checks
+/// that depend on pooled transactions (replacement, per-sender limits, paymaster
+/// reservations) run against this node's live pool, which a test node keeps empty.
+/// Nothing is inserted.
+///
+/// Result: `{"admitted": bool, "error": string | null}`.
+pub struct ValidateTransactionV1Request {
+    pub transaction: Transaction,
+    pub block: Option<BlockIdentifierOrHash>,
+    pub state_overrides: Option<StateOverrideSet>,
+    pub block_overrides: Option<BlockOverrideSet>,
+    /// Pool configuration to apply instead of the node's own (5th param).
+    pub min_tip_wei: Option<u64>,
+}
+
+impl RpcHandler for ValidateTransactionV1Request {
+    fn parse(params: &Option<Vec<Value>>) -> Result<Self, RpcErr> {
+        let params = params
+            .as_ref()
+            .filter(|params| (1..=5).contains(&params.len()))
+            .ok_or_else(|| RpcErr::BadParams("expected one to five params".to_owned()))?;
+        let raw = decode_hex_value(&params[0])?;
+        let transaction = Transaction::decode_canonical(&raw)
+            .map_err(|err| RpcErr::BadParams(format!("undecodable transaction: {err}")))?;
+        let block = match params.get(1) {
+            Some(value) if !value.is_null() => {
+                Some(BlockIdentifierOrHash::parse(value.clone(), 1)?)
+            }
+            _ => None,
+        };
+        let state_overrides = match params.get(2) {
+            Some(value) if !value.is_null() => Some(serde_json::from_value(value.clone())?),
+            _ => None,
+        };
+        let block_overrides = match params.get(3) {
+            Some(value) if !value.is_null() => Some(serde_json::from_value(value.clone())?),
+            _ => None,
+        };
+        // `{"minTip": "0x.."}`: the fixture's pool policy.
+        let min_tip_wei = match params.get(4) {
+            Some(value) if !value.is_null() => match value.get("minTip") {
+                Some(tip) => Some(decode_hex_u64(tip)?),
+                None => None,
+            },
+            _ => None,
+        };
+        Ok(Self {
+            transaction,
+            block,
+            state_overrides,
+            block_overrides,
+            min_tip_wei,
+        })
+    }
+
+    async fn handle(&self, context: RpcApiContext) -> Result<Value, RpcErr> {
+        // The state the pool reads is always the canonical head's; `block` only
+        // selects the header the overrides start from, which must be the head.
+        let head = match self
+            .block
+            .clone()
+            .unwrap_or(BlockIdentifierOrHash::Identifier(BlockIdentifier::default()))
+            .resolve_block_header(&context.storage)
+            .await?
+        {
+            Some(header) => header,
+            None => return Err(RpcErr::BadParams("unknown block".to_owned())),
+        };
+        let chain_config = context.storage.get_chain_config();
+        let header = match self.block_overrides.as_ref().filter(|b| !b.is_empty()) {
+            Some(bo) => bo.apply_to(head.clone(), &chain_config)?,
+            None => head,
+        };
+        let state = match self.state_overrides.clone().filter(|s| !s.is_empty()) {
+            Some(set) => set.into_overrides(
+                chain_config.fork(header.timestamp),
+                context.blockchain.vm_type()?,
+            )?,
+            None => Default::default(),
+        };
+        let sender = self
+            .transaction
+            .sender(&NativeCrypto)
+            .map_err(|err| RpcErr::BadParams(format!("cannot recover sender: {err}")))?;
+        let env = AdmissionEnv {
+            header,
+            state: Arc::new(state),
+            min_tip_wei: self.min_tip_wei,
+        };
+        let outcome = context
+            .blockchain
+            .validate_transaction_in(&self.transaction, sender, Some(&env))
+            .await;
+        Ok(match outcome {
+            Ok(_) => serde_json::json!({ "admitted": true, "error": null }),
+            Err(err) => serde_json::json!({ "admitted": false, "error": err.to_string() }),
+        })
     }
 }
