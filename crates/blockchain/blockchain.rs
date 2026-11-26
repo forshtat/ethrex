@@ -3813,6 +3813,21 @@ impl Blockchain {
         tx: &Transaction,
         sender: Address,
     ) -> Result<(Option<FramePaymasterReservation>, Option<SenderAdmission>), MempoolError> {
+        self.validate_transaction_in(tx, sender, None).await
+    }
+
+    /// [`Blockchain::validate_transaction`] against a caller-supplied environment
+    /// instead of the canonical head: `env` carries the head header the pool
+    /// validates against and a State Override Set layered over the chain state.
+    /// `None` is the canonical-head behaviour. Used by the RPC simulation path, so
+    /// a test harness can ask "would the public mempool admit this transaction
+    /// given this state and this head?" without staging the state on the chain.
+    pub async fn validate_transaction_in(
+        &self,
+        tx: &Transaction,
+        sender: Address,
+        env: Option<&AdmissionEnv>,
+    ) -> Result<(Option<FramePaymasterReservation>, Option<SenderAdmission>), MempoolError> {
         let nonce = tx.nonce();
 
         // On an L1 node, reject L2-only transaction types (FeeToken 0x7d,
@@ -3832,10 +3847,15 @@ impl Blockchain {
         let is_frame_tx = matches!(tx, Transaction::FrameTransaction(_));
 
         let header_no = self.storage.get_latest_block_number()?;
-        let header = self
-            .storage
-            .get_block_header(header_no)?
-            .ok_or(MempoolError::NoBlockHeaderError)?;
+        let header = match env {
+            Some(env) => env.header.clone(),
+            None => self
+                .storage
+                .get_block_header(header_no)?
+                .ok_or(MempoolError::NoBlockHeaderError)?,
+        };
+        let no_overrides = BTreeMap::new();
+        let state_overrides = env.map_or(&no_overrides, |env| &*env.state);
         let config = self.storage.get_chain_config();
 
         // Every fork gate below must resolve the fork exactly like execution does,
@@ -3988,16 +4008,19 @@ impl Blockchain {
         // the current base fee, so a tx that paid the floor at admission
         // doesn't get reclassified as under-floor when base fee oscillates.
         // A floor of 0 disables the check.
-        if self.options.min_tip_wei > 0 {
+        let min_tip_wei = env
+            .and_then(|env| env.min_tip_wei)
+            .unwrap_or(self.options.min_tip_wei);
+        if min_tip_wei > 0 {
             // Saturate to u64::MAX on overflow: a U256 tip cap above u64::MAX
             // wei is astronomically larger than any sane floor, so clamping
             // (and therefore admitting) is the correct direction here. Do not
             // reuse this pattern where truncation would flip a comparison.
             let tip_cap = u64::try_from(tx.gas_tip_cap()).unwrap_or(u64::MAX);
-            if tip_cap < self.options.min_tip_wei {
+            if tip_cap < min_tip_wei {
                 return Err(MempoolError::TipBelowMinimum {
                     actual: tip_cap,
-                    limit: self.options.min_tip_wei,
+                    limit: min_tip_wei,
                 });
             }
         }
@@ -4036,7 +4059,10 @@ impl Blockchain {
             .cost_without_base_fee()
             .ok_or(MempoolError::InvalidTxGasvalues)?;
 
-        let maybe_sender_acc_info = self.storage.get_account_info(header_no, sender).await?;
+        let maybe_sender_acc_info = apply_account_override(
+            self.storage.get_account_info(header_no, sender).await?,
+            state_overrides.get(&sender),
+        );
         // Sender's on-chain nonce, used for three things below: (1) folded into
         // the `SenderAdmission` guard so the per-account queued cap, gapped-nonce,
         // and cumulative-balance gates are re-checked *atomically* under the
@@ -4222,11 +4248,30 @@ impl Blockchain {
             // rules; the outcome reports whether the prefix established a payer
             // within the verify-gas budget and which sender slots / paymaster it
             // touched.
-            let vm_db = StoreVmDatabase::new(self.storage.clone(), header.clone())
-                .map_err(|err| MempoolError::FrameTxValidationFailed(err.to_string()))?;
-            let mut vm = self
-                .new_evm(vm_db)
-                .map_err(|err| MempoolError::FrameTxValidationFailed(err.to_string()))?;
+            let vm_db = StoreVmDatabase::new(
+                self.storage.clone(),
+                match env {
+                    // The database is built from the real head so `state_root` and
+                    // ancestor walks resolve; the overridden header only feeds the
+                    // EVM environment (see `TraceCallOverrides`).
+                    Some(_) => self
+                        .storage
+                        .get_block_header(header_no)?
+                        .ok_or(MempoolError::NoBlockHeaderError)?,
+                    None => header.clone(),
+                },
+            )
+            .map_err(|err| MempoolError::FrameTxValidationFailed(err.to_string()))?;
+            let mut vm = if state_overrides.is_empty() {
+                self.new_evm(vm_db)
+            } else {
+                self.new_overlaid_evm(
+                    vm_db,
+                    env.map(|env| env.state.clone()).unwrap_or_default(),
+                    header_no,
+                )
+            }
+            .map_err(|err| MempoolError::FrameTxValidationFailed(err.to_string()))?;
             // OQ1: no canonical paymaster bytecode is resolvable, so no canonical
             // code hash is passed (the canonical-pay-frame exemption never fires).
             let outcome = vm
@@ -4271,12 +4316,12 @@ impl Blockchain {
                     code_is_canonical || is_canonical_paymaster(&paymaster_code)
                 };
 
-                let paymaster_balance = self
-                    .storage
-                    .get_account_info(header_no, paymaster)
-                    .await?
-                    .map(|info| info.balance)
-                    .unwrap_or_else(U256::zero);
+                let paymaster_balance = apply_account_override(
+                    self.storage.get_account_info(header_no, paymaster).await?,
+                    state_overrides.get(&paymaster),
+                )
+                .map(|info| info.balance)
+                .unwrap_or_else(U256::zero);
                 let reserved = self.mempool.reserved_pending_cost(paymaster)?;
 
                 // Fee-bump exemption: a same-nonce replacement removes the old tx
@@ -5514,4 +5559,46 @@ mod reorg_guard_tests {
             "flag must be cleared after a panicking guard scope"
         );
     }
+}
+
+/// Environment [`Blockchain::validate_transaction_in`] validates against instead of the
+/// canonical head. See that method.
+#[derive(Clone)]
+pub struct AdmissionEnv {
+    /// The head header the pool validates against (a Block Override Set already applied).
+    pub header: BlockHeader,
+    /// State Override Set layered over the chain state at the real head.
+    pub state: Arc<BTreeMap<Address, StateOverride>>,
+    /// Replaces the node's configured minimum tip for this validation, when set.
+    pub min_tip_wei: Option<u64>,
+}
+
+/// Apply one address's [`StateOverride`] to the account info read from the chain.
+/// Synthesizes the account when the chain has none but the override gives it state.
+/// Storage and precompile moves do not affect `AccountInfo`.
+fn apply_account_override(
+    base: Option<AccountInfo>,
+    ov: Option<&StateOverride>,
+) -> Option<AccountInfo> {
+    let Some(ov) = ov.filter(|ov| !ov.is_noop()) else {
+        return base;
+    };
+    if base.is_none() && ov.balance.is_none() && ov.nonce.is_none() && ov.code.is_none() {
+        return base;
+    }
+    let mut info = base.unwrap_or(AccountInfo {
+        code_hash: *EMPTY_KECCAK_HASH,
+        balance: U256::zero(),
+        nonce: 0,
+    });
+    if let Some(balance) = ov.balance {
+        info.balance = balance;
+    }
+    if let Some(nonce) = ov.nonce {
+        info.nonce = nonce;
+    }
+    if let Some((hash, _)) = &ov.code {
+        info.code_hash = *hash;
+    }
+    Some(info)
 }
