@@ -65,6 +65,7 @@ pub mod debug;
 pub mod engine;
 mod eth;
 pub mod ethrex;
+mod state_override;
 mod mempool;
 mod net;
 pub mod rpc;

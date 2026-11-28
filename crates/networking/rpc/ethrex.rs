@@ -25,6 +25,7 @@ use serde_json::Value;
 
 use crate::{
     rpc::{RpcApiContext, RpcHandler},
+    state_override::{OverlaidDatabase, StateOverrideJson, StateOverrides},
     types::block_identifier::{BlockIdentifier, BlockIdentifierOrHash},
     utils::RpcErr,
 };
@@ -50,6 +51,9 @@ pub struct SimulateFrameTransactionRequest {
     /// third param is absent or `null`) is byte-for-byte the pre-existing behavior --
     /// no tracer is constructed and no extra execution pass runs.
     pub trace: bool,
+    /// State laid over the head state for this call only (third param,
+    /// `{"stateOverrides": {..}}`). Empty by default.
+    pub state_overrides: StateOverrides,
 }
 
 /// Optional third param of `ethrex_simulateFrameTransaction`. Absent, `null`, or
@@ -60,6 +64,8 @@ pub struct SimulateFrameTransactionRequest {
 struct SimulateFrameTransactionOptions {
     #[serde(default)]
     trace: bool,
+    #[serde(default)]
+    state_overrides: Option<StateOverrideJson>,
 }
 
 /// Result of `ethrex_simulateFrameTransaction`.
@@ -335,21 +341,26 @@ impl RpcHandler for SimulateFrameTransactionRequest {
             None => None,
         };
 
-        let trace = match params.get(2) {
+        let (trace, state_overrides) = match params.get(2) {
             Some(value) if !value.is_null() => {
                 let options: SimulateFrameTransactionOptions = serde_json::from_value(
                     value.clone(),
                 )
                 .map_err(|error| RpcErr::BadParams(error.to_string()))?;
-                options.trace
+                let state_overrides = StateOverrides::parse(
+                    options.state_overrides.unwrap_or_default(),
+                )
+                .map_err(RpcErr::BadParams)?;
+                (options.trace, state_overrides)
             }
-            _ => false,
+            _ => (false, StateOverrides::default()),
         };
 
         Ok(SimulateFrameTransactionRequest {
             transaction,
             block,
             trace,
+            state_overrides,
         })
     }
 
@@ -575,6 +586,14 @@ impl RpcHandler for SimulateFrameTransactionRequest {
 }
 
 impl SimulateFrameTransactionRequest {
+    /// Lays this request's State Override Set over a head-state database.
+    fn overlaid(&self, inner: StoreVmDatabase) -> OverlaidDatabase {
+        OverlaidDatabase {
+            inner,
+            overrides: self.state_overrides.clone(),
+        }
+    }
+
     /// Runs the EIP-8141 validation-prefix simulation over a fresh throwaway
     /// state at `header`.
     fn simulate_prefix(
@@ -583,7 +602,10 @@ impl SimulateFrameTransactionRequest {
         header: &BlockHeader,
         prefix: &ValidationPrefix,
     ) -> Result<FrameValidationOutcome, RpcErr> {
-        let vm_db = StoreVmDatabase::new(context.storage.clone(), header.clone())?;
+        let vm_db = self.overlaid(StoreVmDatabase::new(
+            context.storage.clone(),
+            header.clone(),
+        )?);
         let mut vm = context.blockchain.new_evm(vm_db)?;
         // EvmError maps to RpcErr::Vm (-32015) via From, matching eth_call/estimateGas.
         vm.simulate_frame_validation_prefix(
@@ -613,7 +635,7 @@ impl SimulateFrameTransactionRequest {
         Option<String>,
     ) {
         let vm_db = match StoreVmDatabase::new(context.storage.clone(), header.clone()) {
-            Ok(db) => db,
+            Ok(db) => self.overlaid(db),
             Err(error) => return (None, None, None, Some(error.to_string())),
         };
         let mut vm = match context.blockchain.new_evm(vm_db) {
@@ -676,6 +698,7 @@ impl SimulateFrameTransactionRequest {
     ) -> Result<Vec<FrameEntry>, String> {
         let vm_db = StoreVmDatabase::new(context.storage.clone(), header.clone())
             .map_err(|error| error.to_string())?;
+        let vm_db = self.overlaid(vm_db);
         let mut vm = context
             .blockchain
             .new_evm(vm_db)

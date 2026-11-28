@@ -4648,7 +4648,7 @@ impl Blockchain {
         Ok(result)
     }
 
-    pub fn new_evm(&self, vm_db: StoreVmDatabase) -> Result<Evm, EvmError> {
+    pub fn new_evm(&self, vm_db: impl VmDatabase + 'static) -> Result<Evm, EvmError> {
         new_evm(&self.options.r#type, vm_db)
     }
 
@@ -5134,7 +5134,10 @@ fn handle_subtrie(
     Ok(())
 }
 
-pub fn new_evm(blockchain_type: &BlockchainType, vm_db: StoreVmDatabase) -> Result<Evm, EvmError> {
+pub fn new_evm(
+    blockchain_type: &BlockchainType,
+    vm_db: impl VmDatabase + 'static,
+) -> Result<Evm, EvmError> {
     let mut evm = match blockchain_type {
         BlockchainType::L1 => Evm::new_for_l1(vm_db, Arc::new(NativeCrypto)),
         BlockchainType::L2(l2_config) => {
